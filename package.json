@@ -1,0 +1,33 @@
+{
+  "name": "mass-battle",
+  "version": "1.0.0",
+  "description": "Mass Battle - hex grid turn-based multiplayer influence game",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "start": "webpack-dev-server --open --mode development",
+    "build": "webpack --mode production",
+    "publish": "git subtree push --prefix dist origin gh-pages"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/howler": "^2.1.2",
+    "@types/lodash": "^4.14.149",
+    "css-loader": "^7.1.2",
+    "html-webpack-plugin": "^5.6.0",
+    "style-loader": "^4.0.0",
+    "ts-loader": "^9.5.2",
+    "typescript": "^5.8.3",
+    "webpack": "^5.99.6",
+    "webpack-cli": "^6.0.1",
+    "webpack-dev-server": "^5.2.1"
+  },
+  "dependencies": {
+    "firebase": "^11.6.0",
+    "howler": "^2.1.3",
+    "lodash": "^4.17.19",
+    "pixi.js": "^7.4.2"
+  }
+}

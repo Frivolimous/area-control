@@ -1,0 +1,119 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: system-ui, sans-serif;
+  background: #12121e;
+  color: #f0f0f5;
+}
+
+#canvas-container {
+  position: absolute;
+  inset: 0;
+}
+
+#ui-root {
+  position: relative;
+  z-index: 10;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.screen {
+  pointer-events: auto;
+}
+
+.hidden {
+  display: none;
+}
+
+.lobby-card,
+.setup-card {
+  max-width: 400px;
+  margin: 10vh auto;
+  padding: 24px;
+  background: rgba(20, 20, 34, 0.9);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lobby-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.join-row {
+  display: flex;
+  gap: 8px;
+}
+
+.join-row input {
+  flex: 1;
+}
+
+input,
+button {
+  font: inherit;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #1e1e2e;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: #3a3a5e;
+}
+
+button:hover {
+  background: #4a4a7e;
+}
+
+#color-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.color-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.color-swatch:hover {
+  border-color: #fff;
+}
+
+#hud {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  pointer-events: auto;
+  background: rgba(20, 20, 34, 0.85);
+  padding: 12px;
+  border-radius: 8px;
+  min-width: 200px;
+}
+
+#turn-counter {
+  font-size: 1.1em;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
