@@ -1,25 +1,24 @@
 import { HexCoord, Tile } from '../types/game';
-import { hexKey } from './hexGrid';
+import { hexKey, hexNeighbors } from './hexGrid';
+import { createRng } from './rng';
 
 export interface MapGenOptions {
   width: number;
   height: number;
   landPercent: number;
-  seed?: number;
+  /** Same seed always produces the same map on every client. */
+  seed: number;
 }
 
 /**
- * Generates a rectangular hex map.
- *
- * PLACEHOLDER: tiles are marked active purely at random, which will NOT
- * produce "one continuous landmass" as the brief requires, and won't hit
- * landPercent precisely either. Replace with a real algorithm — e.g. flood
- * fill / random walk growth from a seed point, or cellular automata with a
- * connectivity pass — once map scale is confirmed (see the note in
- * types/game.ts about mapWidth/mapHeight = 1024).
+ * Generates a rectangular hex map: exactly one connected landmass, grown
+ * by flood-fill from a random (seeded) starting point until it covers
+ * ~landPercent of the grid. Deterministic — same seed, same map, on every
+ * client, with no data ever needing to be synced beyond the seed itself.
  */
 export function generateMap(options: MapGenOptions): Tile[] {
-  const { width, height, landPercent } = options;
+  const { width, height, landPercent, seed } = options;
+  const rng = createRng(seed);
 
   const allCoords: HexCoord[] = [];
   for (let row = 0; row < height; row++) {
@@ -28,11 +27,43 @@ export function generateMap(options: MapGenOptions): Tile[] {
     }
   }
 
-  return allCoords.map((coord) => ({
-    coord,
-    active: Math.random() < landPercent,
-    influence: {},
-  }));
+  const tileMap = new Map<string, Tile>();
+  for (const coord of allCoords) {
+    tileMap.set(hexKey(coord), { coord, active: false, influence: {} });
+  }
+
+  const targetActive = Math.round(allCoords.length * landPercent);
+  const startCoord = allCoords[Math.floor(rng() * allCoords.length)];
+  const startTile = tileMap.get(hexKey(startCoord));
+  if (!startTile) return Array.from(tileMap.values());
+  startTile.active = true;
+
+  const frontier: HexCoord[] = hexNeighbors(startCoord).filter((c) => tileMap.has(hexKey(c)));
+  const inFrontier = new Set(frontier.map(hexKey));
+
+  let activeCount = 1;
+  while (activeCount < targetActive && frontier.length > 0) {
+    const idx = Math.floor(rng() * frontier.length);
+    const coord = frontier[idx];
+    frontier.splice(idx, 1);
+    inFrontier.delete(hexKey(coord));
+
+    const tile = tileMap.get(hexKey(coord));
+    if (!tile || tile.active) continue;
+    tile.active = true;
+    activeCount++;
+
+    for (const n of hexNeighbors(coord)) {
+      const key = hexKey(n);
+      const neighborTile = tileMap.get(key);
+      if (neighborTile && !neighborTile.active && !inFrontier.has(key)) {
+        frontier.push(n);
+        inFrontier.add(key);
+      }
+    }
+  }
+
+  return Array.from(tileMap.values());
 }
 
 /** "odd-r" horizontal offset layout -> axial conversion. */

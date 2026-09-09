@@ -1,5 +1,6 @@
 import { GameConfig, HexCoord, Player, PlayerId, Tile } from '../types/game';
 import { hexKey, hexNeighbors, hexLine } from './hexGrid';
+import { Rng } from './rng';
 
 export function calculateInfluenceEarned(config: GameConfig, numControlledTiles: number): number {
   // Brief's formula, flagged there as still needing work.
@@ -35,8 +36,11 @@ export function spreadInfluence(
   player: Player,
   earnedInfluence: number,
   tiles: Map<string, Tile>,
-  config: GameConfig
+  config: GameConfig,
+  rng: Rng
 ): void {
+  if (!player.startTile) return; // hasn't picked a start location yet — nothing to spread from.
+
   const focusTiles = player.focusTiles.length > 0 ? player.focusTiles : [player.startTile];
   const perFocus = Math.floor(earnedInfluence / focusTiles.length);
   let remainder = earnedInfluence - perFocus * focusTiles.length;
@@ -47,16 +51,18 @@ export function spreadInfluence(
       budget += 1;
       remainder -= 1;
     }
-    spendOnFocus(player, focus, budget, tiles, config);
+    spendOnFocus(player, player.startTile, focus, budget, tiles, config, rng);
   }
 }
 
 function spendOnFocus(
   player: Player,
+  startTile: HexCoord,
   focus: HexCoord,
   budget: number,
   tiles: Map<string, Tile>,
-  config: GameConfig
+  config: GameConfig,
+  rng: Rng
 ): void {
   const focusTile = tiles.get(hexKey(focus));
   if (!focusTile || budget <= 0) return;
@@ -69,13 +75,13 @@ function spendOnFocus(
     addInfluence(focusTile, player.id, spend, config);
     const leftover = budget - spend;
     if (leftover > 0) {
-      spreadRandomlyAround(player, focus, leftover, tiles, config);
+      spreadRandomlyAround(player, focus, leftover, tiles, config, rng);
     }
   } else {
     // Rule 3: walk a straight line toward the focus, spending along the way.
     // TODO: decide the exact spend curve (front-loaded vs even vs weighted
     // toward the far end) — currently spends evenly across the path.
-    const path = hexLine(player.startTile, focus).filter((c) => tiles.has(hexKey(c)));
+    const path = hexLine(startTile, focus).filter((c) => tiles.has(hexKey(c)));
     const perTile = Math.max(1, Math.floor(budget / Math.max(1, path.length)));
     let remaining = budget;
     for (const coord of path) {
@@ -94,7 +100,8 @@ function spreadRandomlyAround(
   center: HexCoord,
   budget: number,
   tiles: Map<string, Tile>,
-  config: GameConfig
+  config: GameConfig,
+  rng: Rng
 ): void {
   const neighbors = hexNeighbors(center).filter((c) => {
     const t = tiles.get(hexKey(c));
@@ -104,7 +111,7 @@ function spreadRandomlyAround(
 
   let remaining = budget;
   while (remaining > 0) {
-    const coord = neighbors[Math.floor(Math.random() * neighbors.length)];
+    const coord = neighbors[Math.floor(rng() * neighbors.length)];
     const tile = tiles.get(hexKey(coord));
     if (tile) addInfluence(tile, player.id, 1, config);
     remaining -= 1;

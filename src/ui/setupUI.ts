@@ -7,6 +7,7 @@ export function renderSetupScreen(root: HTMLElement, roomCode: string): void {
   root.innerHTML = `
     <div class="setup-card">
       <h2>Room: ${roomCode}</h2>
+      <p class="setup-hint">Click a tile on the map to claim your starting location.</p>
       <div id="player-list"></div>
       <button id="start-game-btn">Start Game</button>
     </div>

@@ -25,8 +25,9 @@ export interface Player {
   id: PlayerId;
   name: string;
   color: string;
-  startTile: HexCoord;
-  /** Always includes startTile (rule: start location can never be unfocused). */
+  /** Null until the player picks a start location on the map, post-join. */
+  startTile: HexCoord | null;
+  /** Always includes startTile once chosen (rule: start location can never be unfocused). */
   focusTiles: HexCoord[];
   joinedAtTurn: number;
   isSpectator: boolean;
@@ -49,25 +50,27 @@ export interface GameState {
   hostId: PlayerId;
   phase: GamePhase;
   config: GameConfig;
+  /**
+   * The one piece of true randomness in the whole game — generated once
+   * at room creation and stored here. Every client generates the identical
+   * map from this seed (see game/mapGenerator.ts) rather than syncing tile
+   * data, and it also seeds the deterministic RNG used for turn resolution
+   * (see game/rng.ts, game/turnEngine.ts). This is what resolves the
+   * earlier map-scale concern — no tile array is ever stored or synced.
+   */
+  seed: number;
   turn: number;
   players: Record<PlayerId, Player>;
-  tiles: Tile[];
   createdAt: number;
 }
 
 /**
  * Defaults straight from the project brief. These are meant to be
  * overridden by whatever's stored in Firebase (see config/gameConfig.ts).
- *
- * OPEN QUESTION: mapWidth/mapHeight = 1024 each implies 1,048,576 tiles if
- * these are literal tile-grid dimensions. That's too large for a single
- * Firestore document and probably too large to push over the wire every
- * TurnDurationMS tick. Confirm intent before mapGenerator.ts is treated as
- * more than a placeholder — see the note in that file.
  */
 export const DEFAULT_GAME_CONFIG: GameConfig = {
-  mapWidth: 100,
-  mapHeight: 100,
+  mapWidth: 1024,
+  mapHeight: 1024,
   mapLandPercent: 0.7,
   turnDurationMs: 1000,
   maxInfluencePerTile: 100,

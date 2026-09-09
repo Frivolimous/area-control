@@ -1,14 +1,14 @@
-import { GameState } from '../types/game';
+import { GameState, Tile } from '../types/game';
 import { getControlledTileCount } from '../game/influence';
 import { tileMapFromArray } from '../game/mapGenerator';
 
-export function renderHud(root: HTMLElement, state: GameState): void {
+export function renderHud(root: HTMLElement, state: GameState, tiles: Tile[]): void {
   const turnCounter = root.querySelector('#turn-counter');
   if (turnCounter) turnCounter.textContent = `Turn ${state.turn}`;
 
   const leaderboard = root.querySelector('#leaderboard');
   if (leaderboard) {
-    const tileMap = tileMapFromArray(state.tiles);
+    const tileMap = tileMapFromArray(tiles);
     const rows = Object.values(state.players)
       .filter((p) => !p.isSpectator)
       .map((p) => ({ player: p, count: getControlledTileCount(tileMap, p.id) }))

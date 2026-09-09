@@ -29,7 +29,10 @@ body,
 }
 
 .screen {
-  pointer-events: auto;
+  /* Deliberately NOT pointer-events: auto here — #setup-screen is a
+     full-width block, and the map underneath needs to receive clicks
+     everywhere except where the card itself actually is. */
+  pointer-events: none;
 }
 
 .hidden {
@@ -38,6 +41,7 @@ body,
 
 .lobby-card,
 .setup-card {
+  pointer-events: auto;
   max-width: 400px;
   margin: 10vh auto;
   padding: 24px;
@@ -99,6 +103,23 @@ button:hover {
 
 .color-swatch:hover {
   border-color: #fff;
+}
+
+.color-swatch.selected {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px #12121e, 0 0 0 4px #fff;
+}
+
+.player-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.setup-hint {
+  font-size: 0.9em;
+  opacity: 0.8;
 }
 
 #hud {

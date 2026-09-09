@@ -1,13 +1,13 @@
 import * as PIXI from 'pixi.js';
 import { Tile } from '../types/game';
 import { hexToPixel, hexKey } from '../game/hexGrid';
-import { blendColors, hexStringToNumber } from '../utils/color';
 
 // Pixels; tune once real map scale / zoom behavior is settled.
-const HEX_SIZE = 12;
+export const HEX_SIZE = 12;
 
 export class MapRenderer {
-  private container: PIXI.Container;
+  /** Exposed so callers (mapScreen.ts) can position/scale/hit-test against it. */
+  readonly container: PIXI.Container;
   private tileGraphics: Map<string, PIXI.Graphics> = new Map();
 
   constructor(stage: PIXI.Container) {
@@ -15,7 +15,13 @@ export class MapRenderer {
     stage.addChild(this.container);
   }
 
-  render(tiles: Tile[], playerColors: Record<string, string>): void {
+  /**
+   * Renders active tiles, colored by whatever getFillColor decides —
+   * decoupled from any particular game phase so this same renderer works
+   * for both the pre-game "claim a start tile" view and in-game influence
+   * rendering later.
+   */
+  render(tiles: Tile[], getFillColor: (tile: Tile) => number): void {
     for (const tile of tiles) {
       if (!tile.active) continue;
       const key = hexKey(tile.coord);
@@ -25,18 +31,14 @@ export class MapRenderer {
         this.tileGraphics.set(key, g);
         this.container.addChild(g);
       }
-      this.drawHex(g, tile, playerColors);
+      this.drawHex(g, tile, getFillColor(tile));
     }
   }
 
-  private drawHex(g: PIXI.Graphics, tile: Tile, playerColors: Record<string, string>): void {
+  private drawHex(g: PIXI.Graphics, tile: Tile, fillColor: number): void {
     const { x, y } = hexToPixel(tile.coord, HEX_SIZE);
-    const influencers = Object.keys(tile.influence).filter((id) => (tile.influence[id] ?? 0) > 0);
-    const colors = influencers.map((id) => playerColors[id] ?? '#888888');
-    const fill = colors.length > 0 ? blendColors(colors) : '#3a3a4e';
-
     g.clear();
-    g.beginFill(hexStringToNumber(fill));
+    g.beginFill(fillColor);
     g.drawPolygon(hexCorners(x, y, HEX_SIZE));
     g.endFill();
   }

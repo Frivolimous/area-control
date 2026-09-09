@@ -85,3 +85,10 @@ export function hexToPixel(coord: HexCoord, size: number): { x: number; y: numbe
   const y = size * (Math.sqrt(3) * (coord.r + coord.q / 2));
   return { x, y };
 }
+
+/** Inverse of hexToPixel — pixel position -> nearest hex coordinate. */
+export function pixelToHex(x: number, y: number, size: number): HexCoord {
+  const q = (2 / 3) * (x / size);
+  const r = y / (Math.sqrt(3) * size) - q / 2;
+  return hexRound({ q, r, s: -q - r });
+}
