@@ -38,6 +38,21 @@ export function hexStringToNumber(hex: string): number {
   return parseInt(hex.replace('#', ''), 16);
 }
 
+/**
+ * Fill color for a tile during Active play: blends every influencing
+ * player's color, or a neutral shade for untouched land. Used by
+ * render/mapScreen.ts's game-mode rendering.
+ */
+export function influenceFillColor(
+  tile: { influence: Partial<Record<string, number>> },
+  playerColors: Record<string, string>
+): number {
+  const influencers = Object.keys(tile.influence).filter((id) => (tile.influence[id] ?? 0) > 0);
+  const colors = influencers.map((id) => playerColors[id] ?? '#888888');
+  const fill = colors.length > 0 ? blendColors(colors) : '#3a3a4e';
+  return hexStringToNumber(fill);
+}
+
 /** Default selectable player colors (brief: "select a color from a specified list"). */
 export const PLAYER_COLOR_PALETTE: string[] = [
   '#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231',

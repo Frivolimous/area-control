@@ -21,26 +21,33 @@ src/
   styles/main.css       base layout
   config/               firebase project config + game config loader
   types/game.ts          core types (GameState, Player, Tile, GameConfig)
-  firebase/              room lifecycle + config fetching
-  game/                  pure game logic: hex math, map gen, influence, turns
-  render/                Pixi setup, hex tile rendering, input handling
+  types/global.d.ts      ambient module declarations (CSS imports)
+  firebase/              room lifecycle (create/join/select tile) + config fetching
+  game/                  pure game logic: hex math, seeded rng, map gen, influence, turns
+  render/                Pixi setup, hex tile rendering, click input, map screen orchestration
   ui/                    DOM overlay screens (lobby, setup, HUD)
-  state/gameStore.ts     simple pub/sub for the synced GameState
+  state/                 player identity (localStorage) + pub/sub GameState store
   utils/color.ts          color blending + player palette
+  debug/debugHarness.ts  dev-only console harness for map gen / turn engine, no Firebase needed
 ```
 
-## Open questions / assumptions to revisit
+## Open questions / known issues
 
-These came up while scaffolding and affect real implementation, not just file layout:
+1. **Map generation looks ugly.** Connectivity and `mapLandPercent` are both correct (flood-fill from a seeded point guarantees a single connected landmass), but uniform-random frontier selection grows thin tendrils outward rather than filling in a compact shape, so coastlines end up spiky/splotchy. See the ideas listed in `mapGenerator.ts`'s docstring (weighted frontier selection, noise-based generation, or a smoothing pass) — flagged for later, not urgent.
 
-1. **Map scale.** `mapWidth`/`mapHeight` = 1024 each in the brief implies 1,048,576 tiles if literal. That's too big for a single Firestore document (1MB limit) and likely too much data to push every `turnDurationMs` tick. `mapGenerator.ts` and `roomService.ts` both flag this — worth confirming whether those numbers are tile counts, pixel dimensions, or something else before building the real map algorithm and finalizing the Firebase data model.
+2. **Contested borders can stalemate.** Verified via simulation (not hypothetical): once two players' territories meet and neither has open neutral land left to expand into, contested border tiles can reach a stable equilibrium where `influenceEarnedPerTile`-driven income and `influenceDecayPerTurn` cancel out turn after turn, and nobody ever crosses `controlPercentTarget`. Reproduced on 3 of 20 seed/player-count combinations tested, mostly at low player counts. `maxTurns` (see below) guarantees the game still ends, but doesn't address *why* it stalemates. Possible directions: bias frontier-spending toward genuinely neutral tiles before contested ones, tune the earn/decay ratio, or try the overflow/diffusion mechanic below.
 
-2. **Where turns are computed.** The brief says turns auto-advance on a timer. `game/turnEngine.ts` is written as pure functions so it can run either in a Cloud Function on a schedule, or in a client-designated "host" that ticks locally and writes results. Not yet decided which.
+3. **Overflow/diffusion — alternative to the current "spend on frontier" mechanic.** Instead of capping influence at `maxInfluencePerTile` and spending leftover on random frontier tiles, tiles could accumulate above the cap and "overflow" downhill to neighbors with less influence — closer to a diffusion/erosion simulation, likely producing more organic, wave-like expansion. Not implemented: it's a bigger structural change (redefines what "max" means, needs careful deterministic ordering for cascading overflow across a whole map in one turn) and might independently help or hurt the stalemate issue above. Worth an experiment once the current mechanic has been playtested.
 
-3. **Firestore vs Realtime Database.** Both are initialized in `firebase/firebase.ts`. Firestore fits room/lobby metadata; RTDB is usually better for high-frequency tile updates. Should converge on one as the source of truth for live game state.
+4. **Where turns are computed — diverges from the earlier "host computes" decision.** What's actually built: every client computes turns locally and identically, anchored to a single shared `gameStartTimestamp` (see `types/game.ts`, `render/mapScreen.ts`). No client is more authoritative than another. This was a deliberate deviation — host-broadcast would mean writing the full `tiles` array to Firestore every tick, which is exactly the problem the seed-based architecture was built to avoid. This stops being sufficient the moment focus-tile changes exist mid-game (see #5) — at that point "who's authoritative" becomes a real question again, needing the actions/`effectiveTurn` log discussed earlier but not yet built.
 
-4. **Map generation algorithm.** Currently a random placeholder — does not guarantee a single connected landmass or hit `mapLandPercent` accurately. Needs a real algorithm (flood-fill growth, cellular automata + connectivity pass, etc.).
+5. **Not yet wired up:** focus-tile selection during Active phase (currently only start-tile selection during Setup is wired — `player.focusTiles` is fixed at whatever was set during Setup for the whole game), spectating, mid-game join, and auth beyond a localStorage-persisted id.
 
-5. **Influence spread heuristics.** The "spend evenly along the line toward a focus" and "spread randomly around a topped-up focus" behaviors in `game/influence.ts` are first-pass interpretations of the brief's rules 3–6 — probably need tuning once there's something playable.
+## Resolved
 
-6. **Not yet scaffolded:** auth/player identity (brief doesn't specify sign-in vs anonymous), mid-game spectate/join-late progress boost (marked optional in the brief), and the input handler for actually clicking tiles.
+- ~~Map scale vs. Firestore document size~~ — resolved by moving to a seed + deterministic generation model: every client generates the identical map locally from `GameState.seed` + `GameState.config`, so no tile data is ever stored or synced. See `game/mapGenerator.ts`, `types/game.ts`.
+- ~~Firestore vs Realtime Database~~ — Firestore, given the above (write volume is now sparse — occasional focus changes, not per-tile state).
+- ~~Determinism / `Math.random()`~~ — removed from all game logic (`mapGenerator.ts`, `influence.ts`) in favor of the seeded PRNG in `game/rng.ts`. The one exception, by design: the room's `seed` value itself is generated with `Math.random()` once at room creation — that's the single entropy source everything else derives from deterministically.
+- ~~Territory expansion capped at 7 tiles forever~~ — found via simulation, not inspection: the original "spread leftover around the focus" only ever targeted the focus tile's 6 immediate neighbors, so once those filled, nothing could ever expand further. Fixed by spending leftover on the frontier of the player's whole territory (any active, unclaimed tile adjacent to something they control) instead — confirmed by simulation to converge to a winner. See `game/influence.ts` `spreadToFrontier`.
+- ~~Cross-client determinism risk from Firestore map field ordering~~ — `Object.values(state.players)` iteration order isn't guaranteed identical across clients (Firestore doesn't publish a field-ordering guarantee for map data), and since players are processed sequentially within a turn, a different order could mean different clients computing different results from the same seed. Fixed by sorting players by id before iterating. See `game/turnEngine.ts`.
+- ~~Games that never end~~ — added `GameConfig.maxTurns` (default 500) as a safety net: if nobody hits `controlPercentTarget` by then, the game force-ends and ranks by tiles controlled. Doesn't fix the underlying stalemate mechanism (#2 above), just guarantees termination.

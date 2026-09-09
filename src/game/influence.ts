@@ -12,12 +12,17 @@ export function isControlledBy(tile: Tile, playerId: PlayerId): boolean {
   return influencers.length === 1 && influencers[0] === playerId;
 }
 
-export function getControlledTileCount(tiles: Map<string, Tile>, playerId: PlayerId): number {
-  let count = 0;
+/** All tiles a player currently exclusively controls. */
+export function getControlledTiles(tiles: Map<string, Tile>, playerId: PlayerId): Tile[] {
+  const result: Tile[] = [];
   for (const tile of tiles.values()) {
-    if (isControlledBy(tile, playerId)) count++;
+    if (isControlledBy(tile, playerId)) result.push(tile);
   }
-  return count;
+  return result;
+}
+
+export function getControlledTileCount(tiles: Map<string, Tile>, playerId: PlayerId): number {
+  return getControlledTiles(tiles, playerId).length;
 }
 
 /**
@@ -28,16 +33,32 @@ export function getControlledTileCount(tiles: Map<string, Tile>, playerId: Playe
  * 4. Focus controlled by the player -> pump the tile itself to max.
  * 5. Leftover after topping up a controlled focus spreads randomly around it.
  *
+ * "Around" in rule 5 means the frontier of the player's territory (any
+ * active, not-yet-theirs tile adjacent to something they control) — not
+ * literally just the focus tile's 6 neighbors. That distinction matters:
+ * the earlier neighbors-only version capped every player's expansion at 7
+ * tiles forever, since once those 6 neighbors were claimed there was
+ * nowhere left to spend leftover influence. The frontier grows outward
+ * turn by turn as newly-claimed tiles become part of the territory whose
+ * neighbors count as frontier next turn — confirmed by simulation to
+ * actually converge to a winner (see turnEngine.ts).
+ *
+ * controlledTiles is passed in (computed once per player per turn in
+ * turnEngine.ts) rather than recomputed here, since a full scan of the
+ * tile map is not cheap to repeat per-focus for a player with multiple
+ * focus tiles.
+ *
  * First pass — the distribution/randomness heuristics (esp. spend curve
- * along the line in rule 3, and "random" in rules 2 & 5) will need tuning
- * once there's something playable to test against.
+ * along the line in rule 3) will need tuning once there's something
+ * playable to test against further.
  */
 export function spreadInfluence(
   player: Player,
   earnedInfluence: number,
   tiles: Map<string, Tile>,
   config: GameConfig,
-  rng: Rng
+  rng: Rng,
+  controlledTiles: Tile[]
 ): void {
   if (!player.startTile) return; // hasn't picked a start location yet — nothing to spread from.
 
@@ -51,7 +72,7 @@ export function spreadInfluence(
       budget += 1;
       remainder -= 1;
     }
-    spendOnFocus(player, player.startTile, focus, budget, tiles, config, rng);
+    spendOnFocus(player, player.startTile, focus, budget, tiles, config, rng, controlledTiles);
   }
 }
 
@@ -62,7 +83,8 @@ function spendOnFocus(
   budget: number,
   tiles: Map<string, Tile>,
   config: GameConfig,
-  rng: Rng
+  rng: Rng,
+  controlledTiles: Tile[]
 ): void {
   const focusTile = tiles.get(hexKey(focus));
   if (!focusTile || budget <= 0) return;
@@ -75,7 +97,7 @@ function spendOnFocus(
     addInfluence(focusTile, player.id, spend, config);
     const leftover = budget - spend;
     if (leftover > 0) {
-      spreadRandomlyAround(player, focus, leftover, tiles, config, rng);
+      spreadToFrontier(player, controlledTiles, leftover, tiles, config, rng);
     }
   } else {
     // Rule 3: walk a straight line toward the focus, spending along the way.
@@ -95,23 +117,41 @@ function spendOnFocus(
   }
 }
 
-function spreadRandomlyAround(
+/**
+ * Spends leftover budget on the frontier of the player's territory: active
+ * tiles adjacent to something they already control, that aren't already
+ * exclusively theirs. Picks randomly among that frontier each point, so
+ * growth is organic rather than uniform. If the player is fully boxed in
+ * (no frontier left — e.g. surrounded by ocean or other players' maxed
+ * territory), the leftover just goes unspent for this call; that's a rare
+ * edge case, not a bug to work around.
+ */
+function spreadToFrontier(
   player: Player,
-  center: HexCoord,
+  controlledTiles: Tile[],
   budget: number,
   tiles: Map<string, Tile>,
   config: GameConfig,
   rng: Rng
 ): void {
-  const neighbors = hexNeighbors(center).filter((c) => {
-    const t = tiles.get(hexKey(c));
-    return t && t.active;
-  });
-  if (neighbors.length === 0) return;
+  const frontierKeys = new Set<string>();
+  const frontier: HexCoord[] = [];
+
+  for (const owned of controlledTiles) {
+    for (const n of hexNeighbors(owned.coord)) {
+      const key = hexKey(n);
+      if (frontierKeys.has(key)) continue;
+      const t = tiles.get(key);
+      if (!t || !t.active || isControlledBy(t, player.id)) continue;
+      frontierKeys.add(key);
+      frontier.push(n);
+    }
+  }
+  if (frontier.length === 0) return;
 
   let remaining = budget;
   while (remaining > 0) {
-    const coord = neighbors[Math.floor(rng() * neighbors.length)];
+    const coord = frontier[Math.floor(rng() * frontier.length)];
     const tile = tiles.get(hexKey(coord));
     if (tile) addInfluence(tile, player.id, 1, config);
     remaining -= 1;

@@ -1,17 +1,42 @@
 import * as PIXI from 'pixi.js';
-import { GameConfig, HexCoord, Player, Tile } from '../types/game';
+import { GameConfig, GameState, HexCoord, Player, Tile } from '../types/game';
 import { generateMap } from '../game/mapGenerator';
 import { hexEquals, hexToPixel } from '../game/hexGrid';
-import { hexStringToNumber } from '../utils/color';
+import { hexStringToNumber, influenceFillColor } from '../utils/color';
 import { MapRenderer, HEX_SIZE } from './mapRenderer';
 import { onTileClick } from './inputHandler';
 import { initPixiApp } from './pixiApp';
 import { selectStartTile } from '../firebase/roomService';
+import { processTurn, checkVictory } from '../game/turnEngine';
 
 const NEUTRAL_LAND_COLOR = hexStringToNumber('#3a3a4e');
 
+// Safety cap on how many turns a single tick will replay synchronously —
+// guards against a long tab-backgrounded gap producing a huge catch-up
+// loop that freezes the UI thread. Remaining turns just get picked up on
+// the next tick instead.
+const MAX_CATCHUP_TURNS_PER_TICK = 500;
+const TICK_INTERVAL_MS = 100;
+
+type Mode = 'lobby' | 'game';
+
+let mode: Mode = 'lobby';
 let mapRenderer: MapRenderer | null = null;
 let currentTiles: Tile[] = [];
+
+// Game-mode-only local state — each client runs its own copy of this,
+// computed identically from the shared seed + gameStartTimestamp. See the
+// comment on GameState.gameStartTimestamp for why no host broadcast is
+// needed here.
+let localState: GameState | null = null;
+let localTiles: Tile[] = [];
+let tickHandle: number | null = null;
+let gameEnded = false;
+
+export interface GameLoopCallbacks {
+  onTick: (state: GameState, tiles: Tile[]) => void;
+  onVictory: (winner: Player) => void;
+}
 
 /**
  * Boots the pixi app, generates the map deterministically from the room's
@@ -39,7 +64,10 @@ export function initMapScreen(
   fitAndCenter(app, mapRenderer.container, currentTiles);
 
   onTileClick(app, mapRenderer.container, HEX_SIZE, (coord) => {
-    handleTileClick(roomId, myPlayerId, coord);
+    if (mode === 'lobby') {
+      handleTileClick(roomId, myPlayerId, coord);
+    }
+    // TODO: game-mode click -> focus tile selection, not built yet.
   });
 }
 
@@ -58,16 +86,89 @@ function handleTileClick(roomId: string, myPlayerId: string, coord: HexCoord): v
 
 /**
  * Re-renders tile colors from the latest room state — call from the
- * subscribeToRoom callback whenever players change. Unclaimed tiles render
- * as neutral land; claimed tiles render in that player's color, so
- * everyone sees selections live, per the brief.
+ * subscribeToRoom callback whenever players change, during Setup. Unclaimed
+ * tiles render as neutral land; claimed tiles render in that player's
+ * color, so everyone sees selections live, per the brief. No-ops once the
+ * game has actually started (see startGameLoop).
  */
 export function updateMapScreen(players: Player[]): void {
-  if (!mapRenderer) return;
+  if (!mapRenderer || mode !== 'lobby') return;
   mapRenderer.render(currentTiles, (tile) => {
     const owner = players.find((p) => p.startTile && hexEquals(p.startTile, tile.coord));
     return owner ? hexStringToNumber(owner.color) : NEUTRAL_LAND_COLOR;
   });
+}
+
+/**
+ * Switches from tile-claiming to actual gameplay. Every client that calls
+ * this runs the identical simulation locally — no client is more
+ * authoritative than another, since the whole point of the seed +
+ * gameStartTimestamp anchor is that everyone converges on the same result
+ * without needing to sync per-turn state over the network. Call once, when
+ * a room's phase flips to Active.
+ *
+ * roomState is the snapshot as of game start — its `players` (with each
+ * player's startTile/focusTiles as set during Setup) are frozen for the
+ * rest of the game, since there's no live focus-change UI yet.
+ */
+export function startGameLoop(roomState: GameState, callbacks: GameLoopCallbacks): void {
+  if (roomState.gameStartTimestamp == null) {
+    console.error('startGameLoop called without gameStartTimestamp set');
+    return;
+  }
+
+  mode = 'game';
+  gameEnded = false;
+  localState = { ...roomState, turn: 0 };
+  // Deep-ish copy so game-mode mutation never touches the lobby's tile
+  // array (which updateMapScreen still reads, defensively, even though it
+  // no-ops outside lobby mode).
+  localTiles = currentTiles.map((t) => ({ ...t, influence: { ...t.influence } }));
+
+  tickHandle = window.setInterval(() => tick(callbacks), TICK_INTERVAL_MS);
+  tick(callbacks); // render turn 0 immediately rather than waiting for the first interval
+}
+
+export function stopGameLoop(): void {
+  if (tickHandle != null) {
+    window.clearInterval(tickHandle);
+    tickHandle = null;
+  }
+}
+
+function tick(callbacks: GameLoopCallbacks): void {
+  if (!localState || !mapRenderer || gameEnded || localState.gameStartTimestamp == null) return;
+
+  const elapsed = Date.now() - localState.gameStartTimestamp;
+  const targetTurn = Math.floor(elapsed / localState.config.turnDurationMs);
+
+  let caughtUp = 0;
+  while (localState.turn < targetTurn && caughtUp < MAX_CATCHUP_TURNS_PER_TICK) {
+    const result = processTurn(localState, localTiles);
+    localState = result.state;
+    localTiles = result.tiles;
+    caughtUp++;
+
+    const winner = checkVictory(localState, localTiles);
+    if (winner) {
+      gameEnded = true;
+      stopGameLoop();
+      renderGameTiles();
+      callbacks.onTick(localState, localTiles);
+      callbacks.onVictory(winner);
+      return;
+    }
+  }
+
+  renderGameTiles();
+  callbacks.onTick(localState, localTiles);
+}
+
+function renderGameTiles(): void {
+  if (!mapRenderer || !localState) return;
+  const playerColors: Record<string, string> = {};
+  for (const p of Object.values(localState.players)) playerColors[p.id] = p.color;
+  mapRenderer.render(localTiles, (tile) => influenceFillColor(tile, playerColors));
 }
 
 export function regenerateMapScreen(seed: number=-1, landPercent = 0.7): void {

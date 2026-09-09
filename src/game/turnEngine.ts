@@ -2,7 +2,7 @@ import { GameState, Player, Tile } from '../types/game';
 import { tileMapFromArray } from './mapGenerator';
 import {
   calculateInfluenceEarned,
-  getControlledTileCount,
+  getControlledTiles,
   spreadInfluence,
   applyDecay,
 } from './influence';
@@ -26,17 +26,26 @@ export interface TurnResult {
  */
 export function processTurn(state: GameState, tiles: Tile[]): TurnResult {
   const tileMap = tileMapFromArray(tiles);
-  const players = Object.values(state.players).filter((p) => !p.isSpectator);
+
+  // Sorted by id rather than iterating Object.values() directly: players
+  // are processed sequentially within a turn (an earlier player's spend
+  // can contest a tile a later player would otherwise control), and
+  // Firestore doesn't guarantee map-field order is preserved identically
+  // across every client's read. Without a stable sort here, two clients
+  // could legitimately compute different results from the same seed.
+  const players = Object.values(state.players)
+    .filter((p) => !p.isSpectator)
+    .sort((a, b) => a.id.localeCompare(b.id));
 
   for (const player of players) {
-    const controlledCount = getControlledTileCount(tileMap, player.id);
-    const earned = calculateInfluenceEarned(state.config, controlledCount);
+    const controlledTiles = getControlledTiles(tileMap, player.id);
+    const earned = calculateInfluenceEarned(state.config, controlledTiles.length);
     // Each player gets an independent-looking but fully deterministic RNG
     // stream for this turn, derived from the room seed — every client
     // computes the identical result without syncing anything beyond seed
     // + actions.
     const rng = createRng(deriveSeed(state.seed, `turn:${state.turn}:player:${player.id}`));
-    spreadInfluence(player, earned, tileMap, state.config, rng);
+    spreadInfluence(player, earned, tileMap, state.config, rng, controlledTiles);
   }
 
   applyDecay(tileMap, state.config);
@@ -66,5 +75,27 @@ export function checkVictory(state: GameState, tiles: Tile[]): Player | null {
       return state.players[playerId] ?? null;
     }
   }
+
+  // Safety net: simulation showed the current rules can reach a genuine
+  // stalemate at contested borders (income vs. decay in equilibrium) with
+  // nobody ever crossing controlPercentTarget. Force-end at maxTurns and
+  // rank by tiles controlled — the same metric the brief already
+  // specifies for the leaderboard — rather than let a room run forever.
+  if (state.turn >= state.config.maxTurns) {
+    let bestId: string | null = null;
+    let bestCount = -1;
+    for (const [playerId, count] of Object.entries(counts)) {
+      if (count > bestCount) {
+        bestCount = count;
+        bestId = playerId;
+      }
+    }
+    if (bestId) return state.players[bestId] ?? null;
+    // Nobody controls anything at all (extreme edge case) — still need a
+    // deterministic, guaranteed-terminating fallback.
+    const ids = Object.keys(state.players).sort();
+    return ids.length > 0 ? (state.players[ids[0]] ?? null) : null;
+  }
+
   return null;
 }

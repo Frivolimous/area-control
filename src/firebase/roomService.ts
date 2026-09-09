@@ -35,6 +35,7 @@ export async function createRoom(hostId: PlayerId): Promise<RoomId> {
     phase: GamePhase.Setup,
     config,
     seed,
+    gameStartTimestamp: null,
     turn: 0,
     players: {},
     createdAt: Date.now(),
@@ -48,6 +49,35 @@ export async function joinRoom(roomId: RoomId, player: Player): Promise<void> {
   const snap = await getDoc(ref);
   if (!snap.exists()) throw new Error(`Room ${roomId} does not exist`);
   await updateDoc(ref, { [`players.${player.id}`]: player });
+}
+
+/**
+ * Transitions a room from Setup to Active and stamps the shared turn-timing
+ * anchor. Every client (not just the host) computes its own turn progress
+ * from this single timestamp — see the comment on GameState.gameStartTimestamp.
+ *
+ * Throws if any joined player hasn't picked a start tile yet, since a
+ * player with no startTile never earns/spreads influence (see
+ * game/influence.ts spreadInfluence's early return) — better to catch that
+ * before the game silently starts with a dead player in it.
+ */
+export async function startGame(roomId: RoomId): Promise<void> {
+  const ref = roomDocRef(roomId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error(`Room ${roomId} does not exist`);
+  const state = snap.data() as GameState;
+
+  const notReady = Object.values(state.players).filter((p) => !p.isSpectator && !p.startTile);
+  if (notReady.length > 0) {
+    throw new Error(
+      `Everyone needs a start tile before starting: ${notReady.map((p) => p.name).join(', ')} haven't picked one yet.`
+    );
+  }
+
+  await updateDoc(ref, {
+    phase: GamePhase.Active,
+    gameStartTimestamp: Date.now(),
+  });
 }
 
 /**

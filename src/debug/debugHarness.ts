@@ -67,6 +67,7 @@ export function createTestGame(numPlayers: number, config = DEFAULT_GAME_CONFIG)
     phase: GamePhase.Active,
     config,
     seed,
+    gameStartTimestamp: Date.now(),
     turn: 0,
     players,
     createdAt: Date.now(),

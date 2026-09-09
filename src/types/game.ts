@@ -43,6 +43,15 @@ export interface GameConfig {
   influenceEarnedPerTile: number;
   influenceDecayPerTurn: number;
   controlPercentTarget: number;
+  /**
+   * Safety net, not in the brief: force-ends the game and ranks by tiles
+   * controlled if nobody hits controlPercentTarget by this turn. Added
+   * after simulation showed the current rules can reach a genuine
+   * stalemate — contested border tiles where income and decay reach
+   * equilibrium, so nobody ever crosses the threshold. See
+   * game/turnEngine.ts checkVictory.
+   */
+  maxTurns: number;
 }
 
 export interface GameState {
@@ -59,6 +68,14 @@ export interface GameState {
    * earlier map-scale concern — no tile array is ever stored or synced.
    */
   seed: number;
+  /**
+   * Set once, when the host clicks Start (see firebase/roomService.ts
+   * startGame). Every client computes its own current turn as
+   * floor((Date.now() - gameStartTimestamp) / config.turnDurationMs) and
+   * replays turns locally from this anchor — no per-tick sync needed.
+   * Null until the game actually starts.
+   */
+  gameStartTimestamp: number | null;
   turn: number;
   players: Record<PlayerId, Player>;
   createdAt: number;
@@ -78,4 +95,5 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
   influenceEarnedPerTile: 1,
   influenceDecayPerTurn: 5,
   controlPercentTarget: 0.5,
+  maxTurns: 500,
 };

@@ -1,16 +1,16 @@
 import './styles/main.css';
 import { renderLobbyScreen, attachLobbyHandlers } from './ui/lobbyUI';
 import { renderSetupScreen, renderPlayerList } from './ui/setupUI';
-import { subscribeToRoom } from './firebase/roomService';
+import { renderHud } from './ui/hudUI';
+import { subscribeToRoom, startGame } from './firebase/roomService';
 import { getOrCreatePlayerId } from './state/playerIdentity';
-import { initMapScreen, updateMapScreen } from './render/mapScreen';
-import { GameState } from './types/game';
+import { initMapScreen, updateMapScreen, startGameLoop } from './render/mapScreen';
+import { GamePhase, GameState } from './types/game';
 
-// Entry point. Lobby -> setup room flow, and the pre-game map/tile-claim
-// view, are wired to real Firestore now (see firebase/roomService.ts,
-// render/mapScreen.ts). Still to come: actually starting the game
-// (game/mapGenerator.ts + game/turnEngine.ts already support it — just
-// needs the Start button wired up) and the in-game HUD (ui/hudUI.ts).
+// Entry point. Lobby -> setup -> active game flow is wired to real
+// Firestore now (see firebase/roomService.ts, render/mapScreen.ts).
+// Still to come: focus-tile selection during Active phase, spectating,
+// and mid-game join.
 
 if (process.env.NODE_ENV !== 'production') {
   // Exposes window.debugHarness for testing map gen / turn logic from the
@@ -22,7 +22,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const lobbyScreen = document.getElementById('lobby-screen');
   const setupScreen = document.getElementById('setup-screen');
   const canvasContainer = document.getElementById('canvas-container');
-  if (!lobbyScreen || !setupScreen || !canvasContainer) return;
+  const hud = document.getElementById('hud');
+  if (!lobbyScreen || !setupScreen || !canvasContainer || !hud) return;
 
   renderLobbyScreen(lobbyScreen);
   attachLobbyHandlers(lobbyScreen, {
@@ -35,14 +36,45 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const startBtn = setupScreen.querySelector<HTMLButtonElement>('#start-game-btn');
       if (startBtn) {
-        // Only the host can start the game. Not wired to anything yet.
         startBtn.style.display = isHost ? '' : 'none';
+        startBtn.addEventListener('click', () => {
+          startBtn.disabled = true;
+          startGame(roomId).catch((err) => {
+            console.error('Failed to start game', err);
+            alert(err instanceof Error ? err.message : 'Could not start the game.');
+            startBtn.disabled = false;
+          });
+          // No re-enable on success — subscribeToRoom's phase branch below
+          // takes over once Firestore confirms the phase flip.
+        });
       }
 
       let mapInitialized = false;
-      subscribeToRoom(roomId, (state: GameState) => {
-        renderPlayerList(setupScreen, Object.values(state.players));
+      let gameLoopStarted = false;
 
+      subscribeToRoom(roomId, (state: GameState) => {
+        if (state.phase === GamePhase.Active) {
+          if (!mapInitialized) {
+            // Covers a client that lands here after the game already
+            // started (e.g. a page reload) — it still needs the map
+            // generated once before the loop can render anything.
+            initMapScreen(canvasContainer, roomId, myPlayerId, state.config, state.seed);
+            mapInitialized = true;
+          }
+          if (!gameLoopStarted) {
+            setupScreen.classList.add('hidden');
+            hud.classList.remove('hidden');
+            gameLoopStarted = true;
+            startGameLoop(state, {
+              onTick: (tickState, tiles) => renderHud(hud, tickState, tiles),
+              onVictory: (winner) => alert(`${winner.name} wins!`),
+            });
+          }
+          return;
+        }
+
+        // Setup phase.
+        renderPlayerList(setupScreen, Object.values(state.players));
         if (!mapInitialized) {
           // config + seed are fixed for the room's lifetime, so this only
           // needs to run once — every subsequent update just re-colors

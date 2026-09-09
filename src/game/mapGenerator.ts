@@ -15,6 +15,21 @@ export interface MapGenOptions {
  * by flood-fill from a random (seeded) starting point until it covers
  * ~landPercent of the grid. Deterministic — same seed, same map, on every
  * client, with no data ever needing to be synced beyond the seed itself.
+ *
+ * KNOWN ISSUE: produces visually ugly maps — uniform-random frontier
+ * selection tends to grow thin tendrils outward rather than filling in a
+ * compact blob, so coastlines end up spiky/splotchy rather than natural-
+ * looking. Connectivity and landPercent are both correct; this is purely
+ * an aesthetics problem. Ideas for later:
+ *   - Weight frontier tile selection by how many active neighbors it
+ *     already has, biasing growth toward filling in rather than reaching
+ *     out (cheap fix, same algorithm shape).
+ *   - Generate via seeded noise (simplex/Perlin) thresholded by
+ *     landPercent, then take the largest connected component and grow/
+ *     shrink it to hit the target percentage — generally produces more
+ *     natural coastlines than pure flood-fill.
+ *   - Post-process pass: cellular-automata smoothing (a tile flips to
+ *     match the majority of its neighbors) to knock down thin spikes.
  */
 export function generateMap(options: MapGenOptions): Tile[] {
   const { width, height, landPercent, seed } = options;
