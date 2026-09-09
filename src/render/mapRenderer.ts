@@ -15,6 +15,13 @@ export class MapRenderer {
     stage.addChild(this.container);
   }
 
+  clear(): void {
+    for (const g of this.tileGraphics.values()) {
+      g.destroy();
+    }
+    this.tileGraphics.clear();
+  }
+
   /**
    * Renders active tiles, colored by whatever getFillColor decides —
    * decoupled from any particular game phase so this same renderer works

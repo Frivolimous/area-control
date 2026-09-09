@@ -70,6 +70,21 @@ export function updateMapScreen(players: Player[]): void {
   });
 }
 
+export function regenerateMapScreen(seed: number=-1, landPercent = 0.7): void {
+  if (seed === -1) seed = Math.floor(Math.random() * 0xffffffff);
+  if (!mapRenderer) return;
+  currentTiles = generateMap({
+    width: 100,
+    height: 100,
+    landPercent,
+    seed,
+  });
+  mapRenderer.clear();
+  mapRenderer.render(currentTiles, () => NEUTRAL_LAND_COLOR);
+}
+
+(window as any).regenerateMapScreen = regenerateMapScreen; // for debugging in console
+
 /** Scales and centers the map container to fit the current viewport. No pan/zoom yet — just an initial fit. */
 function fitAndCenter(app: PIXI.Application, container: PIXI.Container, tiles: Tile[]): void {
   let minX = Infinity,
