@@ -57,8 +57,9 @@ export function createTestGame(numPlayers: number, config = DEFAULT_GAME_CONFIG)
       joinedAtTurn: 0,
       isSpectator: false,
     };
-    // Seed each player's start tile with some influence so turn 1 has something to work with.
-    tile.influence[id] = 20;
+    // Match the real game flow (see render/mapScreen.ts startGameLoop):
+    // start tiles begin fully entrenched at max influence.
+    tile.influence[id] = config.maxInfluencePerTile;
   }
 
   const state: GameState = {
@@ -70,6 +71,7 @@ export function createTestGame(numPlayers: number, config = DEFAULT_GAME_CONFIG)
     gameStartTimestamp: Date.now(),
     turn: 0,
     players,
+    actions: [],
     createdAt: Date.now(),
   };
 

@@ -26,9 +26,12 @@ export class MapRenderer {
    * Renders active tiles, colored by whatever getFillColor decides —
    * decoupled from any particular game phase so this same renderer works
    * for both the pre-game "claim a start tile" view and in-game influence
-   * rendering later.
+   * rendering later. isHighlighted, if given, draws a border on matching
+   * tiles — used for showing a player's own focus tiles (never anyone
+   * else's, per the brief's "only your focus is visible to you" rule;
+   * that's enforced by what the caller passes here, not by this renderer).
    */
-  render(tiles: Tile[], getFillColor: (tile: Tile) => number): void {
+  render(tiles: Tile[], getFillColor: (tile: Tile) => number, isHighlighted?: (tile: Tile) => boolean): void {
     for (const tile of tiles) {
       if (!tile.active) continue;
       const key = hexKey(tile.coord);
@@ -38,16 +41,32 @@ export class MapRenderer {
         this.tileGraphics.set(key, g);
         this.container.addChild(g);
       }
-      this.drawHex(g, tile, getFillColor(tile));
+      this.drawHex(g, tile, getFillColor(tile), isHighlighted ? isHighlighted(tile) : false);
     }
   }
 
-  private drawHex(g: PIXI.Graphics, tile: Tile, fillColor: number): void {
+  private drawHex(g: PIXI.Graphics, tile: Tile, fillColor: number, highlighted: boolean): void {
     const { x, y } = hexToPixel(tile.coord, HEX_SIZE);
     g.clear();
+    if (highlighted) g.lineStyle(2, 0xffffff, 1);
     g.beginFill(fillColor);
     g.drawPolygon(hexCorners(x, y, HEX_SIZE));
     g.endFill();
+    if (highlighted) g.lineStyle(0);
+  }
+
+  /**
+   * Updates a single already-rendered tile's color/highlight, without
+   * touching any other tile's Graphics object. Used for the per-frame fade
+   * animation (render/mapScreen.ts) so only the handful of tiles that
+   * actually changed color this turn get redrawn each frame, rather than
+   * the whole map — full render() is still what creates each tile's
+   * Graphics object in the first place, this just updates one.
+   */
+  updateTileColor(tile: Tile, fillColor: number, highlighted: boolean): void {
+    if (!tile.active) return;
+    const g = this.tileGraphics.get(hexKey(tile.coord));
+    if (g) this.drawHex(g, tile, fillColor, highlighted);
   }
 }
 

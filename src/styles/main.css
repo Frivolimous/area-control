@@ -117,9 +117,14 @@ button:hover {
   padding: 4px 0;
 }
 
-.setup-hint {
+.setup-hint,
+.focus-hint {
   font-size: 0.9em;
   opacity: 0.8;
+}
+
+.focus-hint {
+  margin-top: 8px;
 }
 
 #hud {

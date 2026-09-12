@@ -4,13 +4,14 @@ import { renderSetupScreen, renderPlayerList } from './ui/setupUI';
 import { renderHud } from './ui/hudUI';
 import { subscribeToRoom, startGame } from './firebase/roomService';
 import { getOrCreatePlayerId } from './state/playerIdentity';
-import { initMapScreen, updateMapScreen, startGameLoop } from './render/mapScreen';
+import { initMapScreen, updateMapScreen, startGameLoop, applyRoomActions } from './render/mapScreen';
 import { GamePhase, GameState } from './types/game';
 
 // Entry point. Lobby -> setup -> active game flow is wired to real
-// Firestore now (see firebase/roomService.ts, render/mapScreen.ts).
-// Still to come: focus-tile selection during Active phase, spectating,
-// and mid-game join.
+// Firestore now (see firebase/roomService.ts, render/mapScreen.ts),
+// including live focus-tile selection during Active play (click a tile
+// to toggle it in/out of your focus set). Still to come: spectating and
+// mid-game join.
 
 if (process.env.NODE_ENV !== 'production') {
   // Exposes window.debugHarness for testing map gen / turn logic from the
@@ -66,9 +67,14 @@ document.addEventListener('DOMContentLoaded', () => {
             hud.classList.remove('hidden');
             gameLoopStarted = true;
             startGameLoop(state, {
-              onTick: (tickState, tiles) => renderHud(hud, tickState, tiles),
+              onTick: (tickState, tiles) => renderHud(hud, tickState, tiles, myPlayerId),
               onVictory: (winner) => alert(`${winner.name} wins!`),
             });
+          } else {
+            // The game loop owns localState.turn/tiles from here — this
+            // only needs to hand over freshly-arrived focus-change
+            // actions from other players, not the whole snapshot.
+            applyRoomActions(state.actions);
           }
           return;
         }

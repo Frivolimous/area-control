@@ -1,6 +1,6 @@
-import { doc, setDoc, getDoc, onSnapshot, updateDoc, runTransaction } from 'firebase/firestore';
+import { doc, setDoc, getDoc, onSnapshot, updateDoc, runTransaction, arrayUnion } from 'firebase/firestore';
 import { firestore } from './firebase';
-import { GameState, GamePhase, HexCoord, Player, PlayerId, RoomId } from '../types/game';
+import { FocusChangedAction, GameState, GamePhase, HexCoord, Player, PlayerId, RoomId } from '../types/game';
 import { getGameConfig } from '../config/gameConfig';
 import { hexEquals } from '../game/hexGrid';
 
@@ -38,6 +38,7 @@ export async function createRoom(hostId: PlayerId): Promise<RoomId> {
     gameStartTimestamp: null,
     turn: 0,
     players: {},
+    actions: [],
     createdAt: Date.now(),
   };
   await setDoc(roomDocRef(roomId), initialState);
@@ -106,6 +107,32 @@ export async function selectStartTile(
       [`players.${playerId}.startTile`]: coord,
       [`players.${playerId}.focusTiles`]: [coord],
     });
+  });
+}
+
+/**
+ * Records a focus-tile change during Active play. Just an append via
+ * arrayUnion, not a transaction — unlike selectStartTile there's no
+ * exclusivity to protect (multiple players' focus tiles can freely
+ * overlap, including on tiles the brief's rule 3 says aren't even
+ * controlled by them), so two players changing focus at the same moment
+ * don't conflict with each other. See types/game.ts FocusChangedAction
+ * for why effectiveTurn matters here.
+ */
+export async function changeFocus(
+  roomId: RoomId,
+  playerId: PlayerId,
+  focusTiles: HexCoord[],
+  effectiveTurn: number
+): Promise<void> {
+  const action: FocusChangedAction = {
+    playerId,
+    focusTiles,
+    effectiveTurn,
+    createdAt: Date.now(),
+  };
+  await updateDoc(roomDocRef(roomId), {
+    actions: arrayUnion(action),
   });
 }
 

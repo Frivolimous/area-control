@@ -27,10 +27,48 @@ export interface Player {
   color: string;
   /** Null until the player picks a start location on the map, post-join. */
   startTile: HexCoord | null;
-  /** Always includes startTile once chosen (rule: start location can never be unfocused). */
+  /**
+   * Initial focus set at game start (always just [startTile] currently,
+   * set by selectStartTile). This is NOT updated during Active play —
+   * live focus changes go through the actions log instead (see
+   * FocusChangedAction, GameState.actions, game/actions.ts
+   * resolveFocusTiles). Only used as the fallback when no action exists
+   * for a player yet.
+   */
   focusTiles: HexCoord[];
   joinedAtTurn: number;
   isSpectator: boolean;
+}
+
+/**
+ * A player changing their focus tiles during Active play. Append-only —
+ * never edited or removed, so every client can deterministically resolve
+ * "what was this player's focus as of turn N" by finding the latest
+ * action with effectiveTurn <= N (see game/actions.ts resolveFocusTiles).
+ *
+ * effectiveTurn is always the turn the action was submitted on, plus one
+ * — never the current turn itself — so it doesn't matter whether a
+ * client's Firestore listener delivers this before or after it locally
+ * crosses that turn boundary; every client applies it starting from the
+ * same turn regardless of network timing. See render/mapScreen.ts's
+ * BUFFER_MS for the other half of this: a small delay between a turn's
+ * wall-clock boundary and a client actually computing it, giving
+ * Firestore's listener time to deliver same-turn actions first.
+ *
+ * Stored as an array field on the room doc (not a subcollection) since
+ * focus changes are rare, player-initiated events — not a per-tick
+ * write — so this doesn't reintroduce the write-volume problem the
+ * seed-based architecture was built to avoid. Wouldn't scale to a
+ * very-long-running game or very frequent changes; fine for a
+ * happy-hour session.
+ */
+export interface FocusChangedAction {
+  playerId: PlayerId;
+  /** Full replacement focus set, not a delta — always includes startTile. */
+  focusTiles: HexCoord[];
+  effectiveTurn: number;
+  /** Client's own clock; only used to tie-break same-effectiveTurn actions from the same player. */
+  createdAt: number;
 }
 
 export interface GameConfig {
@@ -78,6 +116,8 @@ export interface GameState {
   gameStartTimestamp: number | null;
   turn: number;
   players: Record<PlayerId, Player>;
+  /** Append-only log of focus changes during Active play. See FocusChangedAction. */
+  actions: FocusChangedAction[];
   createdAt: number;
 }
 

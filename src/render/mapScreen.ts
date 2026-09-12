@@ -1,13 +1,15 @@
 import * as PIXI from 'pixi.js';
 import { GameConfig, GameState, HexCoord, Player, Tile } from '../types/game';
 import { generateMap } from '../game/mapGenerator';
-import { hexEquals, hexToPixel } from '../game/hexGrid';
-import { hexStringToNumber, influenceFillColor } from '../utils/color';
+import { hexEquals, hexKey, hexToPixel } from '../game/hexGrid';
+import { hexStringToNumber, influenceFillColor, lerpColorNumeric } from '../utils/color';
 import { MapRenderer, HEX_SIZE } from './mapRenderer';
 import { onTileClick } from './inputHandler';
 import { initPixiApp } from './pixiApp';
-import { selectStartTile } from '../firebase/roomService';
+import { selectStartTile, changeFocus } from '../firebase/roomService';
 import { processTurn, checkVictory } from '../game/turnEngine';
+import { resolveFocusTiles, toggleFocusTile } from '../game/actions';
+import { tileMapFromArray } from '../game/mapGenerator';
 
 const NEUTRAL_LAND_COLOR = hexStringToNumber('#3a3a4e');
 
@@ -16,7 +18,24 @@ const NEUTRAL_LAND_COLOR = hexStringToNumber('#3a3a4e');
 // loop that freezes the UI thread. Remaining turns just get picked up on
 // the next tick instead.
 const MAX_CATCHUP_TURNS_PER_TICK = 500;
-const TICK_INTERVAL_MS = 100;
+// How often we check whether enough real time has passed to advance a
+// turn. Cheap to poll frequently now that render/onTick only fire when a
+// turn actually advances (see tick() below) — this just bounds the worst-
+// case latency between a turn boundary and it showing up on screen. Should
+// stay comfortably below whatever turnDurationMs you configure; 30ms
+// supports turnDurationMs down to roughly 200-300ms (see the clock-skew
+// note in README.md) before that becomes the limiting factor instead.
+const TICK_INTERVAL_MS = 30;
+// Delay between a turn's wall-clock boundary and a client actually
+// computing that turn — gives Firestore's realtime listener time to
+// deliver any focus-change action meant for that turn before we commit to
+// computing it. Without this, a client could compute turn N locally
+// before another player's same-turn action has arrived, producing a
+// permanent fork (localTiles advances incrementally, not recomputed from
+// scratch, so a missed action doesn't self-heal). Conservative default —
+// tune down once real Firestore listener latency has been measured in
+// practice; see the tuning note in README.md.
+const BUFFER_MS = 250;
 
 type Mode = 'lobby' | 'game';
 
@@ -32,6 +51,35 @@ let localState: GameState | null = null;
 let localTiles: Tile[] = [];
 let tickHandle: number | null = null;
 let gameEnded = false;
+let myPlayerId: string | null = null;
+let myRoomId: string | null = null;
+
+// Color-fade animation state. Turns advance in discrete jumps (every
+// turnDurationMs, or faster during catch-up), which looks stuttery if the
+// displayed color just snaps to the new value. Instead, each turn's color
+// change fades in smoothly over the following turnDurationMs, on a
+// requestAnimationFrame loop decoupled from the turn-advancing setInterval
+// above. Only tiles that actually changed color that turn are touched per
+// frame (see beginColorFade/animateFade) — typically a small fraction of
+// the map near contested frontiers — rather than redrawing everything at
+// 60fps, which would undo the "only redraw on change" optimization done
+// for the turnDurationMs speed question.
+let prevFillColors: Map<string, number> = new Map();
+let targetFillColors: Map<string, number> = new Map();
+let fadingTileKeys: Set<string> = new Set();
+let fadeTileLookup: Map<string, Tile> = new Map();
+let turnAdvanceTime = 0;
+let rafHandle: number | null = null;
+
+// The local player's own click is the source of truth for the highlight
+// immediately, ahead of Firestore round-tripping the action back and the
+// next turn actually processing it — resolveFocusTiles from the actions
+// log would otherwise show the PREVIOUS focus set until that catches up,
+// which could be a full turnDurationMs + BUFFER_MS away. Cleared on the
+// next real turn advance, by which point the action has taken effect
+// (effectiveTurn is always "the next turn"), so resolveFocusTiles agrees
+// again and there's nothing left for this to override.
+let optimisticFocusTiles: HexCoord[] | null = null;
 
 export interface GameLoopCallbacks {
   onTick: (state: GameState, tiles: Tile[]) => void;
@@ -40,17 +88,21 @@ export interface GameLoopCallbacks {
 
 /**
  * Boots the pixi app, generates the map deterministically from the room's
- * seed, and wires clicks to claiming a start tile. Call once per room —
- * the map only needs generating once per client since it's a pure
- * function of (config, seed), both fixed for the room's lifetime.
+ * seed, and wires clicks — to claiming a start tile during Setup, or to
+ * toggling focus tiles during Active play. Call once per room — the map
+ * only needs generating once per client since it's a pure function of
+ * (config, seed), both fixed for the room's lifetime.
  */
 export function initMapScreen(
   container: HTMLElement,
   roomId: string,
-  myPlayerId: string,
+  playerId: string,
   config: GameConfig,
   seed: number
 ): void {
+  myRoomId = roomId;
+  myPlayerId = playerId;
+
   const app = initPixiApp(container);
 
   currentTiles = generateMap({
@@ -65,22 +117,67 @@ export function initMapScreen(
 
   onTileClick(app, mapRenderer.container, HEX_SIZE, (coord) => {
     if (mode === 'lobby') {
-      handleTileClick(roomId, myPlayerId, coord);
+      handleSetupClick(roomId, playerId, coord);
+    } else {
+      handleGameClick(coord);
     }
-    // TODO: game-mode click -> focus tile selection, not built yet.
   });
 }
 
-function handleTileClick(roomId: string, myPlayerId: string, coord: HexCoord): void {
+function handleSetupClick(roomId: string, playerId: string, coord: HexCoord): void {
   const tile = currentTiles.find((t) => hexEquals(t.coord, coord));
   if (!tile || !tile.active) return; // clicked water or off the grid — ignore
 
-  selectStartTile(roomId, myPlayerId, coord).catch((err) => {
+  selectStartTile(roomId, playerId, coord).catch((err) => {
     // Most likely cause: someone else claimed this tile a moment earlier
     // (the transaction in roomService.ts is what actually prevents the
     // conflict — this just surfaces the rejection to the user).
     console.error('Failed to select start tile', err);
     alert(err instanceof Error ? err.message : 'Could not select that tile.');
+  });
+}
+
+/** The local player's current focus tiles for rendering purposes — prefers the optimistic click override, see optimisticFocusTiles. */
+function getMyFocusTiles(): HexCoord[] {
+  if (optimisticFocusTiles) return optimisticFocusTiles;
+  if (!localState || !myPlayerId) return [];
+  const me = localState.players[myPlayerId];
+  return me ? resolveFocusTiles(me, localState.actions, localState.turn) : [];
+}
+
+/**
+ * Toggles a tile in/out of the current player's own focus set. The start
+ * tile can never be removed (brief rule 1) — toggleFocusTile is a no-op
+ * for it. The change takes effect at the next turn boundary (never
+ * immediately), which is what makes it safe regardless of exactly when
+ * other clients' Firestore listeners deliver it — see BUFFER_MS and
+ * types/game.ts FocusChangedAction. The highlight itself, though, updates
+ * right away (see optimisticFocusTiles) — no reason to make the player
+ * wait a full turn just to see their own click register.
+ */
+function handleGameClick(coord: HexCoord): void {
+  if (!localState || !myRoomId || !myPlayerId) return;
+  const me = localState.players[myPlayerId];
+  if (!me || !me.startTile) return;
+
+  const tile = localTiles.find((t) => hexEquals(t.coord, coord));
+  if (!tile || !tile.active) return;
+
+  const currentFocus = getMyFocusTiles();
+  const newFocus = toggleFocusTile(currentFocus, me.startTile, coord);
+  if (newFocus === currentFocus) return; // no-op toggle (clicked the start tile)
+
+  optimisticFocusTiles = newFocus;
+  if (mapRenderer) {
+    const key = hexKey(coord);
+    const fillColor = targetFillColors.get(key) ?? NEUTRAL_LAND_COLOR;
+    const willBeFocused = newFocus.some((c) => hexEquals(c, coord));
+    mapRenderer.updateTileColor(tile, fillColor, willBeFocused);
+  }
+
+  const effectiveTurn = getCurrentBufferedTurn() + 1;
+  changeFocus(myRoomId, myPlayerId, newFocus, effectiveTurn).catch((err) => {
+    console.error('Failed to change focus', err);
   });
 }
 
@@ -100,16 +197,26 @@ export function updateMapScreen(players: Player[]): void {
 }
 
 /**
+ * Feeds freshly-arrived Firestore state into the running game loop —
+ * specifically, new focus-change actions from any player. Call this from
+ * every subscribeToRoom callback once the game is Active (harmless to
+ * call before that too). Wholesale-replaces localState.actions rather
+ * than merging/deduping: actions are immutable once created and Firestore
+ * always delivers the full current array, so a plain replace is safe and
+ * simpler than diffing.
+ */
+export function applyRoomActions(actions: GameState['actions']): void {
+  if (!localState) return;
+  localState = { ...localState, actions };
+}
+
+/**
  * Switches from tile-claiming to actual gameplay. Every client that calls
  * this runs the identical simulation locally — no client is more
  * authoritative than another, since the whole point of the seed +
  * gameStartTimestamp anchor is that everyone converges on the same result
  * without needing to sync per-turn state over the network. Call once, when
  * a room's phase flips to Active.
- *
- * roomState is the snapshot as of game start — its `players` (with each
- * player's startTile/focusTiles as set during Setup) are frozen for the
- * rest of the game, since there's no live focus-change UI yet.
  */
 export function startGameLoop(roomState: GameState, callbacks: GameLoopCallbacks): void {
   if (roomState.gameStartTimestamp == null) {
@@ -125,8 +232,30 @@ export function startGameLoop(roomState: GameState, callbacks: GameLoopCallbacks
   // no-ops outside lobby mode).
   localTiles = currentTiles.map((t) => ({ ...t, influence: { ...t.influence } }));
 
+  // Reset fade state in case a previous game ran in this same session —
+  // otherwise turn 0 could try to fade FROM stale colors left over from a
+  // prior game rather than from neutral.
+  prevFillColors = new Map();
+  targetFillColors = new Map();
+  fadingTileKeys = new Set();
+  optimisticFocusTiles = null;
+
+  // Start tiles begin fully entrenched (max influence) rather than
+  // building up from zero — players can push outward from turn 0 instead
+  // of spending the first several turns just filling their own start
+  // tile. See game/influence.ts spreadToFrontier for why this also
+  // matters mechanically: only maxed tiles can spawn frontier expansion.
+  const tileByKey = new Map(localTiles.map((t) => [hexKey(t.coord), t] as const));
+  for (const player of Object.values(localState.players)) {
+    if (player.isSpectator || !player.startTile) continue;
+    const tile = tileByKey.get(hexKey(player.startTile));
+    if (tile) tile.influence[player.id] = localState.config.maxInfluencePerTile;
+  }
+
   tickHandle = window.setInterval(() => tick(callbacks), TICK_INTERVAL_MS);
-  tick(callbacks); // render turn 0 immediately rather than waiting for the first interval
+  tick(callbacks); // compute + begin fading in turn 0 immediately rather than waiting for the first interval
+
+  startAnimationLoop();
 }
 
 export function stopGameLoop(): void {
@@ -134,13 +263,21 @@ export function stopGameLoop(): void {
     window.clearInterval(tickHandle);
     tickHandle = null;
   }
+  stopAnimationLoop();
+}
+
+/** The turn this client is confident is safe to compute right now — see BUFFER_MS. */
+function getCurrentBufferedTurn(): number {
+  if (!localState || localState.gameStartTimestamp == null) return 0;
+  const elapsed = Date.now() - localState.gameStartTimestamp;
+  const safeElapsed = Math.max(0, elapsed - BUFFER_MS);
+  return Math.floor(safeElapsed / localState.config.turnDurationMs);
 }
 
 function tick(callbacks: GameLoopCallbacks): void {
   if (!localState || !mapRenderer || gameEnded || localState.gameStartTimestamp == null) return;
 
-  const elapsed = Date.now() - localState.gameStartTimestamp;
-  const targetTurn = Math.floor(elapsed / localState.config.turnDurationMs);
+  const targetTurn = getCurrentBufferedTurn();
 
   let caughtUp = 0;
   while (localState.turn < targetTurn && caughtUp < MAX_CATCHUP_TURNS_PER_TICK) {
@@ -153,38 +290,113 @@ function tick(callbacks: GameLoopCallbacks): void {
     if (winner) {
       gameEnded = true;
       stopGameLoop();
-      renderGameTiles();
+      renderGameTiles(); // full accurate snap at game end, not a partial fade-in-progress
       callbacks.onTick(localState, localTiles);
       callbacks.onVictory(winner);
       return;
     }
   }
 
-  renderGameTiles();
+  // Nothing to do if no turn actually advanced this poll — avoids
+  // recomputing fade targets and re-rendering the HUD on every single
+  // poll interval regardless of whether the game state changed.
+  if (caughtUp === 0) return;
+
+  beginColorFade();
   callbacks.onTick(localState, localTiles);
+}
+
+/**
+ * Captures the color each active tile should fade TO this turn, and what
+ * it should fade FROM (wherever the previous fade was heading — not
+ * necessarily where the animation had visually gotten to if interrupted
+ * mid-fade, e.g. during catch-up after a backgrounded tab; that's fine,
+ * since catch-up intentionally skips animating through skipped turns and
+ * only fades in the final resulting state). Only tiles whose color
+ * actually changed get added to fadingTileKeys — animateFade() only
+ * touches those, not the whole map, every frame.
+ */
+function beginColorFade(): void {
+  if (!localState) return;
+  const playerColors: Record<string, string> = {};
+  for (const p of Object.values(localState.players)) playerColors[p.id] = p.color;
+  const maxInfluencePerTile = localState.config.maxInfluencePerTile;
+
+  const newTargets = new Map<string, number>();
+  const changed = new Set<string>();
+  for (const tile of localTiles) {
+    if (!tile.active) continue;
+    const key = hexKey(tile.coord);
+    const color = influenceFillColor(tile, playerColors, maxInfluencePerTile);
+    newTargets.set(key, color);
+    if (targetFillColors.get(key) !== color) changed.add(key);
+  }
+
+  prevFillColors = targetFillColors; // wherever we were fading TOWARD becomes the new fade-FROM point
+  targetFillColors = newTargets;
+  fadingTileKeys = changed;
+  fadeTileLookup = tileMapFromArray(localTiles);
+  turnAdvanceTime = Date.now();
+
+  // Any focus change submitted before this turn boundary has now taken
+  // effect (effectiveTurn is always "the next turn processed"), so
+  // resolveFocusTiles agrees with whatever was shown optimistically —
+  // nothing left to override.
+  optimisticFocusTiles = null;
+}
+
+function startAnimationLoop(): void {
+  const loop = () => {
+    animateFade();
+    rafHandle = mode === 'game' && !gameEnded ? requestAnimationFrame(loop) : null;
+  };
+  rafHandle = requestAnimationFrame(loop);
+}
+
+function stopAnimationLoop(): void {
+  if (rafHandle != null) {
+    cancelAnimationFrame(rafHandle);
+    rafHandle = null;
+  }
+}
+
+function animateFade(): void {
+  if (!localState || !mapRenderer || fadingTileKeys.size === 0) return;
+
+  const t = Math.min(1, (Date.now() - turnAdvanceTime) / localState.config.turnDurationMs);
+  const myFocus = getMyFocusTiles();
+
+  for (const key of fadingTileKeys) {
+    const tile = fadeTileLookup.get(key);
+    if (!tile) continue;
+    const prevColor = prevFillColors.get(key) ?? NEUTRAL_LAND_COLOR;
+    const targetColor = targetFillColors.get(key) ?? NEUTRAL_LAND_COLOR;
+    const color = t >= 1 ? targetColor : lerpColorNumeric(prevColor, targetColor, t);
+    const highlighted = myFocus.some((c) => hexEquals(c, tile.coord));
+    mapRenderer.updateTileColor(tile, color, highlighted);
+  }
+
+  if (t >= 1) fadingTileKeys.clear(); // done — nothing more to update until the next turn advance
 }
 
 function renderGameTiles(): void {
   if (!mapRenderer || !localState) return;
   const playerColors: Record<string, string> = {};
   for (const p of Object.values(localState.players)) playerColors[p.id] = p.color;
-  mapRenderer.render(localTiles, (tile) => influenceFillColor(tile, playerColors));
-}
+  const maxInfluencePerTile = localState.config.maxInfluencePerTile;
 
-export function regenerateMapScreen(seed: number=-1, landPercent = 0.7): void {
-  if (seed === -1) seed = Math.floor(Math.random() * 0xffffffff);
-  if (!mapRenderer) return;
-  currentTiles = generateMap({
-    width: 100,
-    height: 100,
-    landPercent,
-    seed,
-  });
-  mapRenderer.clear();
-  mapRenderer.render(currentTiles, () => NEUTRAL_LAND_COLOR);
-}
+  // Only ever highlight the LOCAL player's own focus tiles — the brief is
+  // explicit that other players' focus is invisible. Every client has all
+  // the data (it needs everyone's to compute turns correctly), so this
+  // privacy rule is enforced here, at render time, not by withholding data.
+  const myFocus = getMyFocusTiles();
 
-(window as any).regenerateMapScreen = regenerateMapScreen; // for debugging in console
+  mapRenderer.render(
+    localTiles,
+    (tile) => influenceFillColor(tile, playerColors, maxInfluencePerTile),
+    (tile) => myFocus.some((c) => hexEquals(c, tile.coord))
+  );
+}
 
 /** Scales and centers the map container to fit the current viewport. No pan/zoom yet — just an initial fit. */
 function fitAndCenter(app: PIXI.Application, container: PIXI.Container, tiles: Tile[]): void {

@@ -7,6 +7,7 @@ import {
   applyDecay,
 } from './influence';
 import { createRng, deriveSeed } from './rng';
+import { resolveFocusTiles } from './actions';
 
 export interface TurnResult {
   state: GameState;
@@ -22,7 +23,9 @@ export interface TurnResult {
  * `tiles` is passed in rather than read off `state` because it's no
  * longer synced — every client generates it locally from `state.seed`
  * (see game/mapGenerator.ts) and replays actions/turns against its own
- * copy.
+ * copy. `state.actions` (focus changes) IS synced, since those are rare
+ * player-initiated events rather than per-tick data — see
+ * types/game.ts FocusChangedAction.
  */
 export function processTurn(state: GameState, tiles: Tile[]): TurnResult {
   const tileMap = tileMapFromArray(tiles);
@@ -40,12 +43,13 @@ export function processTurn(state: GameState, tiles: Tile[]): TurnResult {
   for (const player of players) {
     const controlledTiles = getControlledTiles(tileMap, player.id);
     const earned = calculateInfluenceEarned(state.config, controlledTiles.length);
+    const focusTiles = resolveFocusTiles(player, state.actions, state.turn);
     // Each player gets an independent-looking but fully deterministic RNG
     // stream for this turn, derived from the room seed — every client
     // computes the identical result without syncing anything beyond seed
     // + actions.
     const rng = createRng(deriveSeed(state.seed, `turn:${state.turn}:player:${player.id}`));
-    spreadInfluence(player, earned, tileMap, state.config, rng, controlledTiles);
+    spreadInfluence(player, focusTiles, earned, tileMap, state.config, rng, controlledTiles);
   }
 
   applyDecay(tileMap, state.config);

@@ -46,7 +46,10 @@ export function getControlledTileCount(tiles: Map<string, Tile>, playerId: Playe
  * controlledTiles is passed in (computed once per player per turn in
  * turnEngine.ts) rather than recomputed here, since a full scan of the
  * tile map is not cheap to repeat per-focus for a player with multiple
- * focus tiles.
+ * focus tiles. Likewise focusTiles is resolved by the caller from the
+ * actions log (see game/actions.ts resolveFocusTiles) rather than read
+ * off player.focusTiles directly — that field is only the initial value
+ * from game start, not the live one during Active play.
  *
  * First pass — the distribution/randomness heuristics (esp. spend curve
  * along the line in rule 3) will need tuning once there's something
@@ -54,15 +57,15 @@ export function getControlledTileCount(tiles: Map<string, Tile>, playerId: Playe
  */
 export function spreadInfluence(
   player: Player,
+  focusTiles: HexCoord[],
   earnedInfluence: number,
   tiles: Map<string, Tile>,
   config: GameConfig,
   rng: Rng,
   controlledTiles: Tile[]
 ): void {
-  if (!player.startTile) return; // hasn't picked a start location yet — nothing to spread from.
+  if (!player.startTile || focusTiles.length === 0) return; // hasn't picked a start location yet — nothing to spread from.
 
-  const focusTiles = player.focusTiles.length > 0 ? player.focusTiles : [player.startTile];
   const perFocus = Math.floor(earnedInfluence / focusTiles.length);
   let remainder = earnedInfluence - perFocus * focusTiles.length;
 
@@ -97,20 +100,32 @@ function spendOnFocus(
     addInfluence(focusTile, player.id, spend, config);
     const leftover = budget - spend;
     if (leftover > 0) {
-      spreadToFrontier(player, controlledTiles, leftover, tiles, config, rng);
+      spendLeftover(player, controlledTiles, leftover, tiles, config, rng);
     }
   } else {
-    // Rule 3: walk a straight line toward the focus, spending along the way.
-    // TODO: decide the exact spend curve (front-loaded vs even vs weighted
-    // toward the far end) — currently spends evenly across the path.
+    // Rule 3: walk a straight line toward the focus, fully saturating each
+    // tile before moving to the next — a paced "laying track" advance
+    // along the line, mirroring spendLeftover's reinforce-then-advance
+    // pattern for the frontier case.
+    //
+    // Originally divided budget evenly across the WHOLE path and always
+    // restarted from index 0 every turn. That never actually made
+    // progress: the early tiles reach max within a turn or two, and
+    // addInfluence silently clamps at max without signaling the spend had
+    // no effect — so every subsequent turn's budget kept getting wasted
+    // re-topping-up already-full tiles near the start, and the path never
+    // advanced. Confirmed via simulation: a focus set on a far tile made
+    // zero progress after 60 turns under the old approach.
     const path = hexLine(startTile, focus).filter((c) => tiles.has(hexKey(c)));
-    const perTile = Math.max(1, Math.floor(budget / Math.max(1, path.length)));
     let remaining = budget;
     for (const coord of path) {
       if (remaining <= 0) break;
       const tile = tiles.get(hexKey(coord));
       if (!tile || !tile.active) continue;
-      const spend = Math.min(perTile, remaining);
+      const current = tile.influence[player.id] ?? 0;
+      const toMax = Math.max(0, config.maxInfluencePerTile - current);
+      if (toMax === 0) continue; // already maxed — move on to the next tile along the path
+      const spend = Math.min(remaining, toMax);
       addInfluence(tile, player.id, spend, config);
       remaining -= spend;
     }
@@ -118,15 +133,33 @@ function spendOnFocus(
 }
 
 /**
- * Spends leftover budget on the frontier of the player's territory: active
- * tiles adjacent to something they already control, that aren't already
- * exclusively theirs. Picks randomly among that frontier each point, so
- * growth is organic rather than uniform. If the player is fully boxed in
- * (no frontier left — e.g. surrounded by ocean or other players' maxed
- * territory), the leftover just goes unspent for this call; that's a rare
- * edge case, not a bug to work around.
+ * Spends leftover budget in two phases:
+ *
+ * 1. Reinforce the player's own controlled-but-submax tiles toward max.
+ *    This is NOT in the brief's literal rules but is load-bearing: once a
+ *    tile gets even 1 point of influence it's immediately "controlled"
+ *    (control is about exclusivity, not magnitude), which makes it
+ *    ineligible for phase 2's frontier-expansion targeting — but nothing
+ *    else was topping it up toward max. Confirmed via simulation: without
+ *    this phase, every newly-claimed tile gets stuck forever at whatever
+ *    tiny amount first claimed it, and territory growth freezes almost
+ *    immediately (a handful of tiles per player, permanently) since
+ *    nothing can ever reach max to unlock the next ring.
+ * 2. Once everything the player controls is maxed (or there's simply
+ *    nothing left to reinforce), expand into new frontier — active,
+ *    unclaimed tiles adjacent to something they control at max influence.
+ *    Requiring the source tile to be maxed (not just controlled) means a
+ *    newly-claimed ring has to fully solidify before it can spawn the
+ *    next ring — a paced wavefront rather than instant unlimited-depth
+ *    spread.
+ *
+ * Both phases pick randomly among their eligible set each point, so
+ * growth is organic rather than uniform. If there's nowhere eligible for
+ * either phase (fully boxed in by ocean or others' maxed territory, with
+ * nothing of the player's own left to reinforce), the leftover goes
+ * unspent for this call — an expected pacing lull, not a bug.
  */
-function spreadToFrontier(
+function spendLeftover(
   player: Player,
   controlledTiles: Tile[],
   budget: number,
@@ -134,10 +167,26 @@ function spreadToFrontier(
   config: GameConfig,
   rng: Rng
 ): void {
+  let remaining = budget;
+
+  // Phase 1: reinforce submax territory.
+  const submax = controlledTiles.filter((t) => (t.influence[player.id] ?? 0) < config.maxInfluencePerTile);
+  while (remaining > 0 && submax.length > 0) {
+    const idx = Math.floor(rng() * submax.length);
+    const tile = submax[idx];
+    addInfluence(tile, player.id, 1, config);
+    remaining -= 1;
+    if ((tile.influence[player.id] ?? 0) >= config.maxInfluencePerTile) {
+      submax.splice(idx, 1); // fully topped up — remove from the pool
+    }
+  }
+  if (remaining <= 0) return;
+
+  // Phase 2: expand into new frontier.
   const frontierKeys = new Set<string>();
   const frontier: HexCoord[] = [];
-
   for (const owned of controlledTiles) {
+    if ((owned.influence[player.id] ?? 0) < config.maxInfluencePerTile) continue; // not maxed — can't push outward from here yet
     for (const n of hexNeighbors(owned.coord)) {
       const key = hexKey(n);
       if (frontierKeys.has(key)) continue;
@@ -149,7 +198,6 @@ function spreadToFrontier(
   }
   if (frontier.length === 0) return;
 
-  let remaining = budget;
   while (remaining > 0) {
     const coord = frontier[Math.floor(rng() * frontier.length)];
     const tile = tiles.get(hexKey(coord));
