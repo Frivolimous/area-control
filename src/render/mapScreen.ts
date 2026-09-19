@@ -1,11 +1,11 @@
 import * as PIXI from 'pixi.js';
 import { GameConfig, GameState, HexCoord, Player, Tile } from '../types/game';
-import { generateMap } from '../game/mapGenerator';
+import { generateMap, MapGenOptions } from '../game/mapGenerator';
 import { hexEquals, hexKey, hexToPixel } from '../game/hexGrid';
 import { hexStringToNumber, influenceFillColor, lerpColorNumeric } from '../utils/color';
 import { MapRenderer, HEX_SIZE } from './mapRenderer';
 import { onTileClick } from './inputHandler';
-import { initPixiApp } from './pixiApp';
+import { getPixiApp, initPixiApp } from './pixiApp';
 import { selectStartTile, changeFocus } from '../firebase/roomService';
 import { processTurn, checkVictory } from '../game/turnEngine';
 import { resolveFocusTiles, toggleFocusTile } from '../game/actions';
@@ -424,3 +424,34 @@ function fitAndCenter(app: PIXI.Application, container: PIXI.Container, tiles: T
     (app.screen.height - mapH * scale) / 2 - (minY - pad) * scale
   );
 }
+
+export function regenerateMapScreen(seed: number=-1, options: Partial<MapGenOptions> = {}): void {
+  if (seed === -1) seed = Math.floor(Math.random() * 0xffffffff);
+  if (!mapRenderer) return;
+  options.width ??= 100;
+  options.height ??= 100;
+  options.landPercent ??= 0.7;
+  options.seed = seed;
+  options.edgeMarginFraction ??= 0.08;
+  options.edgeMarginMin ??= 2;
+  options.paddingFactor ??= 1.4;
+  options.regionOptions ??= {
+    minRegions: 8,
+    maxRegions: 32,
+    regionDensity: 2.75,
+  };
+  options.lakeOptions ??= {
+    numLakesDenominator: 100,
+    numLakesMin: 1,
+    minLakeSize: 3,
+    maxLakeSizeDenominator: 20,
+    maxLakeSizeMin: 5,
+  };
+  currentTiles = generateMap(options);
+  mapRenderer.clear();
+  mapRenderer.render(currentTiles, () => NEUTRAL_LAND_COLOR);
+  fitAndCenter(getPixiApp(), mapRenderer.container, currentTiles);
+
+}
+
+(window as any).regenerateMapScreen = regenerateMapScreen; // for debugging in console

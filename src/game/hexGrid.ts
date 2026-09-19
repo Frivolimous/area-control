@@ -92,3 +92,68 @@ export function pixelToHex(x: number, y: number, size: number): HexCoord {
   const r = y / (Math.sqrt(3) * size) - q / 2;
   return hexRound({ q, r, s: -q - r });
 }
+
+/**
+ * True if every coord in activeKeys is reachable from every other via
+ * neighbor steps staying within activeKeys — i.e. a single connected
+ * landmass rather than separate islands. Used by both map generation
+ * (Voronoi region selection) and lake carving (reject a lake if it would
+ * sever the landmass into pieces).
+ */
+export function isConnected(activeKeys: Set<string>): boolean {
+  if (activeKeys.size === 0) return true;
+  const start = activeKeys.values().next().value as string;
+  const [q, r] = start.split(',').map(Number);
+
+  const visited = new Set<string>([start]);
+  const queue: HexCoord[] = [{ q, r }];
+  let head = 0;
+  while (head < queue.length) {
+    const coord = queue[head++];
+    for (const n of hexNeighbors(coord)) {
+      const key = hexKey(n);
+      if (!visited.has(key) && activeKeys.has(key)) {
+        visited.add(key);
+        queue.push(n);
+      }
+    }
+  }
+  return visited.size === activeKeys.size;
+}
+
+/**
+ * Finds every connected component within activeKeys and returns the
+ * largest one. Used to repair the rare case where clipping a hard edge
+ * margin onto Voronoi-region-selected land severs a region's connection
+ * to its neighbor — cheap insurance for the "one continuous landmass"
+ * invariant the rest of the game depends on.
+ */
+export function largestConnectedComponent(activeKeys: Set<string>): Set<string> {
+  const unvisited = new Set(activeKeys);
+  let largest: Set<string> = new Set();
+
+  while (unvisited.size > 0) {
+    const start = unvisited.values().next().value as string;
+    const [q, r] = start.split(',').map(Number);
+    const component = new Set<string>([start]);
+    unvisited.delete(start);
+
+    const queue: HexCoord[] = [{ q, r }];
+    let head = 0;
+    while (head < queue.length) {
+      const coord = queue[head++];
+      for (const n of hexNeighbors(coord)) {
+        const key = hexKey(n);
+        if (unvisited.has(key)) {
+          unvisited.delete(key);
+          component.add(key);
+          queue.push(n);
+        }
+      }
+    }
+
+    if (component.size > largest.size) largest = component;
+  }
+
+  return largest;
+}
