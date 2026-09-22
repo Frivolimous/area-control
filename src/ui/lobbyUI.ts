@@ -1,105 +1,120 @@
 import { PLAYER_COLOR_PALETTE } from '../utils/color';
-import { createRoom, joinRoom } from '../firebase/roomService';
-import { getOrCreatePlayerId } from '../state/playerIdentity';
-import { Player } from '../types/game';
+import { GameState } from '../types/game';
 
+/**
+ * Renders the lobby's static shell: player panel top-left (name, color
+ * picker, host-only new-map/edit-config buttons), room panel top-right
+ * (room code, player list, host-only start button). Data-driven bits
+ * (room code, player list, color taken/selected state, host visibility)
+ * get filled in by updateLobbyScreen on every room update — this only
+ * needs to run once.
+ */
 export function renderLobbyScreen(root: HTMLElement): void {
   root.innerHTML = `
-    <div class="lobby-card">
-      <h1>Mass Battle</h1>
+    <div class="panel panel-top-left" id="player-panel">
       <input id="player-name-input" placeholder="Your name" maxlength="20" />
       <div id="color-picker"></div>
-      <div class="lobby-actions">
-        <button id="create-room-btn">Create Room</button>
-        <div class="join-row">
-          <input id="room-code-input" placeholder="Room code" maxlength="6" />
-          <button id="join-room-btn">Join</button>
-        </div>
+      <div id="host-map-controls" class="hidden">
+        <button id="regenerate-map-btn">New Map</button>
+        <button id="edit-config-btn">Edit Config</button>
       </div>
+    </div>
+    <div class="panel panel-top-right" id="room-panel">
+      <h2 id="room-code-display"></h2>
+      <p class="setup-hint">Click a tile on the map to claim your starting location.</p>
+      <div id="player-list"></div>
+      <button id="start-game-btn" class="hidden">Start Game</button>
     </div>
   `;
 
   const colorPicker = root.querySelector('#color-picker');
   if (colorPicker) {
     colorPicker.innerHTML = PLAYER_COLOR_PALETTE.map(
-      (c, i) =>
-        `<button class="color-swatch${i === 0 ? ' selected' : ''}" data-color="${c}" style="background:${c}"></button>`
+      (c) => `<button class="color-swatch" data-color="${c}" style="background:${c}"></button>`
     ).join('');
   }
 }
 
 export interface LobbyCallbacks {
-  /** Fired once a room has been created or joined, so the caller can switch screens. */
-  onRoomReady: (roomId: string, isHost: boolean) => void;
+  onNameChange: (name: string) => void;
+  onColorSelect: (color: string) => void;
+  onRegenerateMap: () => void;
+  onEditConfig: () => void;
+  onStartGame: () => void;
+}
+
+/** Wires the lobby screen's interactive behavior. Call once, right after renderLobbyScreen. */
+export function attachLobbyHandlers(root: HTMLElement, callbacks: LobbyCallbacks): void {
+  const nameInput = root.querySelector<HTMLInputElement>('#player-name-input');
+  const commitName = () => {
+    const name = nameInput?.value.trim();
+    if (name) callbacks.onNameChange(name);
+  };
+  // Commits on blur/Enter rather than every keystroke — avoids a Firestore
+  // write per character typed.
+  nameInput?.addEventListener('blur', commitName);
+  nameInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      commitName();
+      nameInput.blur();
+    }
+  });
+
+  root.querySelector('#color-picker')?.addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    if (!target.classList.contains('color-swatch') || target.hasAttribute('disabled')) return;
+    const color = target.dataset.color;
+    if (color) callbacks.onColorSelect(color);
+  });
+
+  root.querySelector('#regenerate-map-btn')?.addEventListener('click', () => callbacks.onRegenerateMap());
+  root.querySelector('#edit-config-btn')?.addEventListener('click', () => callbacks.onEditConfig());
+  root.querySelector('#start-game-btn')?.addEventListener('click', () => callbacks.onStartGame());
 }
 
 /**
- * Wires up the lobby screen's interactive behavior. Call once, right after
- * renderLobbyScreen, against the same root element.
- *
- * NOTE: Tile selection (choosing a start location) isn't wired up yet —
- * players join with startTile: null and pick it once the map/pixi layer
- * is hooked up (see render/inputHandler.ts).
+ * Re-renders the lobby's data-driven bits from the latest room state:
+ * room code, player list, color-picker taken/selected state, the name
+ * input's current value (skipped while the player has it focused, so we
+ * don't clobber what they're mid-typing), and host-only controls'
+ * visibility.
  */
-export function attachLobbyHandlers(root: HTMLElement, callbacks: LobbyCallbacks): void {
-  let selectedColor = PLAYER_COLOR_PALETTE[0];
+export function updateLobbyScreen(
+  root: HTMLElement,
+  state: GameState,
+  myPlayerId: string,
+  isHost: boolean,
+  roomCode: string
+): void {
+  const roomCodeDisplay = root.querySelector('#room-code-display');
+  if (roomCodeDisplay) roomCodeDisplay.textContent = `Room: ${roomCode}`;
 
-  const colorPicker = root.querySelector('#color-picker');
-  colorPicker?.addEventListener('click', (event) => {
-    const target = event.target as HTMLElement;
-    const color = target.dataset.color;
-    if (!color) return;
-    selectedColor = color;
-    colorPicker.querySelectorAll('.color-swatch').forEach((el) => el.classList.remove('selected'));
-    target.classList.add('selected');
-  });
-
-  const nameInput = root.querySelector<HTMLInputElement>('#player-name-input');
-  const roomCodeInput = root.querySelector<HTMLInputElement>('#room-code-input');
-  const createBtn = root.querySelector<HTMLButtonElement>('#create-room-btn');
-  const joinBtn = root.querySelector<HTMLButtonElement>('#join-room-btn');
-
-  function buildPlayer(): Player {
-    return {
-      id: getOrCreatePlayerId(),
-      name: nameInput?.value.trim() || 'Player',
-      color: selectedColor,
-      startTile: null,
-      focusTiles: [],
-      joinedAtTurn: 0,
-      isSpectator: false,
-    };
+  const players = Object.values(state.players);
+  const playerList = root.querySelector('#player-list');
+  if (playerList) {
+    playerList.innerHTML = players
+      .map(
+        (p) =>
+          `<div class="player-row"><span style="color:${p.color}">●</span> ${p.name}${p.id === myPlayerId ? ' (you)' : ''}</div>`
+      )
+      .join('');
   }
 
-  createBtn?.addEventListener('click', async () => {
-    createBtn.disabled = true;
-    try {
-      const player = buildPlayer();
-      const roomId = await createRoom(player.id);
-      await joinRoom(roomId, player);
-      callbacks.onRoomReady(roomId, true);
-    } catch (err) {
-      console.error('Failed to create room', err);
-      alert('Could not create room — see console for details.');
-      createBtn.disabled = false;
-    }
+  const me = state.players[myPlayerId];
+  const nameInput = root.querySelector<HTMLInputElement>('#player-name-input');
+  if (nameInput && me && document.activeElement !== nameInput) {
+    nameInput.value = me.name;
+  }
+
+  const takenColors = new Set(players.filter((p) => p.id !== myPlayerId).map((p) => p.color));
+  root.querySelectorAll<HTMLButtonElement>('.color-swatch').forEach((el) => {
+    const color = el.dataset.color;
+    const isTaken = color ? takenColors.has(color) : false;
+    el.classList.toggle('taken', isTaken);
+    el.classList.toggle('selected', color === me?.color);
+    el.disabled = isTaken;
   });
 
-  joinBtn?.addEventListener('click', async () => {
-    const code = roomCodeInput?.value.trim().toUpperCase();
-    if (!code) {
-      alert('Enter a room code first.');
-      return;
-    }
-    joinBtn.disabled = true;
-    try {
-      const player = buildPlayer();
-      await joinRoom(code, player);
-      callbacks.onRoomReady(code, false);
-    } catch (err) {
-      console.error('Failed to join room', err);
-      alert('Could not join that room — check the code and try again.');
-      joinBtn.disabled = false;
-    }
-  });
+  root.querySelector('#host-map-controls')?.classList.toggle('hidden', !isHost);
+  root.querySelector('#start-game-btn')?.classList.toggle('hidden', !isHost);
 }

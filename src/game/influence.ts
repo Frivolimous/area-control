@@ -1,5 +1,5 @@
 import { GameConfig, HexCoord, Player, PlayerId, Tile } from '../types/game';
-import { hexKey, hexNeighbors, hexLine } from './hexGrid';
+import { hexKey, hexLine, hexRing, hexDistance } from './hexGrid';
 import { Rng } from './rng';
 
 export function calculateInfluenceEarned(config: GameConfig, numControlledTiles: number): number {
@@ -31,29 +31,19 @@ export function getControlledTileCount(tiles: Map<string, Tile>, playerId: Playe
  * 2. Influence splits evenly across focus tiles, remainder spent randomly.
  * 3. Focus not controlled by the player -> spread in a straight line toward it.
  * 4. Focus controlled by the player -> pump the tile itself to max.
- * 5. Leftover after topping up a controlled focus spreads randomly around it.
+ * 5. Leftover after topping up a controlled focus spreads around it.
  *
- * "Around" in rule 5 means the frontier of the player's territory (any
- * active, not-yet-theirs tile adjacent to something they control) — not
- * literally just the focus tile's 6 neighbors. That distinction matters:
- * the earlier neighbors-only version capped every player's expansion at 7
- * tiles forever, since once those 6 neighbors were claimed there was
- * nowhere left to spend leftover influence. The frontier grows outward
- * turn by turn as newly-claimed tiles become part of the territory whose
- * neighbors count as frontier next turn — confirmed by simulation to
- * actually converge to a winner (see turnEngine.ts).
+ * Both controlled (rules 4-5) and uncontrolled (rule 3) foci ultimately
+ * spend through ringExpand — see its docstring for the radius-by-radius
+ * mechanic. focusTiles is resolved by the caller from the actions log
+ * (see game/actions.ts resolveFocusTiles) rather than read off
+ * player.focusTiles directly — that field is only the initial value from
+ * game start, not the live one during Active play.
  *
  * controlledTiles is passed in (computed once per player per turn in
- * turnEngine.ts) rather than recomputed here, since a full scan of the
- * tile map is not cheap to repeat per-focus for a player with multiple
- * focus tiles. Likewise focusTiles is resolved by the caller from the
- * actions log (see game/actions.ts resolveFocusTiles) rather than read
- * off player.focusTiles directly — that field is only the initial value
- * from game start, not the live one during Active play.
- *
- * First pass — the distribution/randomness heuristics (esp. spend curve
- * along the line in rule 3) will need tuning once there's something
- * playable to test against further.
+ * turnEngine.ts, already needed there for the earn-per-tile calculation)
+ * rather than recomputed here — rule 3 uses it to find the player's
+ * nearest controlled tile to a given uncontrolled focus, see spendOnFocus.
  */
 export function spreadInfluence(
   player: Player,
@@ -79,6 +69,20 @@ export function spreadInfluence(
   }
 }
 
+/** Nearest (by hex distance) of a player's controlled tiles to `target`, or null if they control nothing. Ties broken by iteration order — deterministic, since controlledTiles' order derives from the deterministic tile map. */
+function findNearestControlledTile(controlledTiles: Tile[], target: HexCoord): HexCoord | null {
+  let nearest: HexCoord | null = null;
+  let bestDist = Infinity;
+  for (const tile of controlledTiles) {
+    const d = hexDistance(tile.coord, target);
+    if (d < bestDist) {
+      bestDist = d;
+      nearest = tile.coord;
+    }
+  }
+  return nearest;
+}
+
 function spendOnFocus(
   player: Player,
   startTile: HexCoord,
@@ -93,116 +97,147 @@ function spendOnFocus(
   if (!focusTile || budget <= 0) return;
 
   if (isControlledBy(focusTile, player.id)) {
-    // Rule 4: pump the focus tile itself toward max, spill leftover nearby.
-    const current = focusTile.influence[player.id] ?? 0;
-    const toMax = Math.max(0, config.maxInfluencePerTile - current);
-    const spend = Math.min(budget, toMax);
-    addInfluence(focusTile, player.id, spend, config);
-    const leftover = budget - spend;
-    if (leftover > 0) {
-      spendLeftover(player, controlledTiles, leftover, tiles, config, rng);
-    }
+    // Rules 4-5: ring-expand outward from the focus itself. Radius 0 (the
+    // focus tile) is naturally prioritized first as the smallest ring, so
+    // this covers "pump the focus to max" and "spread the leftover
+    // around it" as one mechanic rather than two separate steps.
+    ringExpand(player, focus, budget, tiles, config, rng);
   } else {
-    // Rule 3: walk a straight line toward the focus, fully saturating each
-    // tile before moving to the next — a paced "laying track" advance
-    // along the line, mirroring spendLeftover's reinforce-then-advance
-    // pattern for the frontier case.
+    // Rule 3: walk a straight line toward the focus, fully saturating
+    // each tile before advancing to the next — starting from the
+    // player's NEAREST controlled tile to the focus, not always the
+    // original start tile. Previously always started from startTile
+    // regardless of how far the player's territory had since grown in
+    // some other direction — needlessly long once expanded, and could
+    // hit an unrelated gap near the original start point even when the
+    // player's actual nearest territory had a clean path.
     //
-    // Originally divided budget evenly across the WHOLE path and always
-    // restarted from index 0 every turn. That never actually made
-    // progress: the early tiles reach max within a turn or two, and
-    // addInfluence silently clamps at max without signaling the spend had
-    // no effect — so every subsequent turn's budget kept getting wasted
-    // re-topping-up already-full tiles near the start, and the path never
-    // advanced. Confirmed via simulation: a focus set on a far tile made
-    // zero progress after 60 turns under the old approach.
-    const path = hexLine(startTile, focus).filter((c) => tiles.has(hexKey(c)));
+    // Also STOPS at the first gap (an inactive tile, or one that doesn't
+    // exist on the grid at all) rather than skipping past it and
+    // continuing to spend on tiles on the far side — otherwise influence
+    // could "cross" open water or the edge of the generated grid
+    // instantly in a single turn, without ever actually reaching there
+    // via contiguous land.
+    //
+    // Whatever's left over once the walk is blocked by a gap, or
+    // finishes (reaches the focus, or the whole reachable path is
+    // already maxed), ring-expands from whichever tile the walk actually
+    // reached — that tile effectively becomes the focus for the
+    // leftover, exactly as if it had been a controlled focus there.
+    const origin = findNearestControlledTile(controlledTiles, focus) ?? startTile;
+    const path = hexLine(origin, focus);
     let remaining = budget;
+    let lastReached: HexCoord = origin;
+
     for (const coord of path) {
       if (remaining <= 0) break;
       const tile = tiles.get(hexKey(coord));
-      if (!tile || !tile.active) continue;
+      if (!tile || !tile.active) break; // gap — stop here, don't cross it
+      lastReached = coord;
+
       const current = tile.influence[player.id] ?? 0;
-      const toMax = Math.max(0, config.maxInfluencePerTile - current);
-      if (toMax === 0) continue; // already maxed — move on to the next tile along the path
+      const toMax = config.maxInfluencePerTile - current;
+      if (toMax <= 0) continue; // already maxed — move on to the next tile along the path
+
       const spend = Math.min(remaining, toMax);
       addInfluence(tile, player.id, spend, config);
       remaining -= spend;
     }
+
+    if (remaining > 0) {
+      ringExpand(player, lastReached, remaining, tiles, config, rng);
+    }
   }
 }
 
+// Generous safety cap on ring radius — guarantees ringExpand terminates
+// even if budget is huge and rings keep coming up empty (e.g. running off
+// the edge of the generated grid in every direction). Cheap regardless:
+// checking every radius up to this cap is at most a few tens of
+// thousands of hex-distance comparisons, negligible next to a turn's
+// other costs.
+const MAX_RING_RADIUS = 300;
+
 /**
- * Spends leftover budget in two phases:
+ * Expands outward from `center` in expanding rings — radius 0 (just the
+ * center tile), then 1, then 2, 3... — splitting the available budget as
+ * evenly as possible among all eligible tiles in each ring before moving
+ * to a wider one. A tile is eligible if it's active and this player
+ * hasn't already maxed it out; that deliberately includes both the
+ * player's own partially-filled nearby tiles and unclaimed/contested/
+ * enemy tiles alike — proximity to the center is what decides priority
+ * here, not current ownership.
  *
- * 1. Reinforce the player's own controlled-but-submax tiles toward max.
- *    This is NOT in the brief's literal rules but is load-bearing: once a
- *    tile gets even 1 point of influence it's immediately "controlled"
- *    (control is about exclusivity, not magnitude), which makes it
- *    ineligible for phase 2's frontier-expansion targeting — but nothing
- *    else was topping it up toward max. Confirmed via simulation: without
- *    this phase, every newly-claimed tile gets stuck forever at whatever
- *    tiny amount first claimed it, and territory growth freezes almost
- *    immediately (a handful of tiles per player, permanently) since
- *    nothing can ever reach max to unlock the next ring.
- * 2. Once everything the player controls is maxed (or there's simply
- *    nothing left to reinforce), expand into new frontier — active,
- *    unclaimed tiles adjacent to something they control at max influence.
- *    Requiring the source tile to be maxed (not just controlled) means a
- *    newly-claimed ring has to fully solidify before it can spawn the
- *    next ring — a paced wavefront rather than instant unlimited-depth
- *    spread.
+ * A ring only gets skipped (moving straight to the next radius) if it has
+ * no eligible tiles at all. Otherwise the ring's budget share is
+ * distributed via a per-tile base amount plus the remainder, given out to
+ * a shuffled subset so it's not always the same tiles (by hexRing's fixed
+ * generation order) getting the +1 — this shuffle is a plain loop, not a
+ * sort comparator, so calling rng() here doesn't have the engine-
+ * dependent-invocation-order problem a sort would (see
+ * game/voronoiRegions.ts for that pitfall). If a ring's per-tile share
+ * exceeds what some tiles can still absorb (already close to max), the
+ * excess correctly carries over to the next radius rather than being
+ * wasted, since spend is capped at each tile's own remaining room and the
+ * unspent difference stays in `remaining`.
  *
- * Both phases pick randomly among their eligible set each point, so
- * growth is organic rather than uniform. If there's nowhere eligible for
- * either phase (fully boxed in by ocean or others' maxed territory, with
- * nothing of the player's own left to reinforce), the leftover goes
- * unspent for this call — an expected pacing lull, not a bug.
+ * Terminates once budget runs out, or MAX_RING_RADIUS is reached with
+ * nothing having been spent for a while (a ring coming up transiently
+ * empty doesn't mean a wider one will too — e.g. it could be a lake — so
+ * this doesn't stop at the first empty ring).
  */
-function spendLeftover(
+function ringExpand(
   player: Player,
-  controlledTiles: Tile[],
+  center: HexCoord,
   budget: number,
   tiles: Map<string, Tile>,
   config: GameConfig,
   rng: Rng
 ): void {
   let remaining = budget;
+  let radius = 0;
 
-  // Phase 1: reinforce submax territory.
-  const submax = controlledTiles.filter((t) => (t.influence[player.id] ?? 0) < config.maxInfluencePerTile);
-  while (remaining > 0 && submax.length > 0) {
-    const idx = Math.floor(rng() * submax.length);
-    const tile = submax[idx];
-    addInfluence(tile, player.id, 1, config);
-    remaining -= 1;
-    if ((tile.influence[player.id] ?? 0) >= config.maxInfluencePerTile) {
-      submax.splice(idx, 1); // fully topped up — remove from the pool
+  while (remaining > 0 && radius <= MAX_RING_RADIUS) {
+    const ring = hexRing(center, radius).filter((coord) => {
+      const tile = tiles.get(hexKey(coord));
+      if (!tile || !tile.active) return false;
+      const current = tile.influence[player.id] ?? 0;
+      return current < config.maxInfluencePerTile;
+    });
+
+    if (ring.length === 0) {
+      radius++;
+      continue;
     }
-  }
-  if (remaining <= 0) return;
 
-  // Phase 2: expand into new frontier.
-  const frontierKeys = new Set<string>();
-  const frontier: HexCoord[] = [];
-  for (const owned of controlledTiles) {
-    if ((owned.influence[player.id] ?? 0) < config.maxInfluencePerTile) continue; // not maxed — can't push outward from here yet
-    for (const n of hexNeighbors(owned.coord)) {
-      const key = hexKey(n);
-      if (frontierKeys.has(key)) continue;
-      const t = tiles.get(key);
-      if (!t || !t.active || isControlledBy(t, player.id)) continue;
-      frontierKeys.add(key);
-      frontier.push(n);
+    const perTile = Math.floor(remaining / ring.length);
+    let remainder = remaining - perTile * ring.length;
+
+    const order = ring.map((_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [order[i], order[j]] = [order[j], order[i]];
     }
-  }
-  if (frontier.length === 0) return;
 
-  while (remaining > 0) {
-    const coord = frontier[Math.floor(rng() * frontier.length)];
-    const tile = tiles.get(hexKey(coord));
-    if (tile) addInfluence(tile, player.id, 1, config);
-    remaining -= 1;
+    for (const idx of order) {
+      const tile = tiles.get(hexKey(ring[idx]));
+      if (!tile) continue;
+
+      const current = tile.influence[player.id] ?? 0;
+      const toMax = config.maxInfluencePerTile - current;
+      let share = perTile;
+      if (remainder > 0) {
+        share += 1;
+        remainder -= 1;
+      }
+      const spend = Math.min(share, toMax, remaining);
+      if (spend <= 0) continue;
+
+      addInfluence(tile, player.id, spend, config);
+      remaining -= spend;
+    }
+
+    radius++;
   }
 }
 

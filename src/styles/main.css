@@ -29,43 +29,14 @@ body,
 }
 
 .screen {
-  /* Deliberately NOT pointer-events: auto here — #setup-screen is a
-     full-width block, and the map underneath needs to receive clicks
-     everywhere except where the card itself actually is. */
+  /* Deliberately NOT pointer-events: auto here — these are full-bleed
+     wrappers, and the map underneath needs to receive clicks everywhere
+     except where an actual panel/card is. */
   pointer-events: none;
 }
 
 .hidden {
   display: none;
-}
-
-.lobby-card,
-.setup-card {
-    pointer-events: auto;
-    max-width: 400px;
-    margin: 1vh auto;
-    margin-right: 1vw;
-    padding: 14px;
-    background: rgba(20, 20, 34, 0.9);
-    border-radius: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-
-.lobby-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.join-row {
-  display: flex;
-  gap: 8px;
-}
-
-.join-row input {
-  flex: 1;
 }
 
 input,
@@ -85,6 +56,80 @@ button {
 
 button:hover {
   background: #4a4a7e;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --- Entry screen --- */
+
+.entry-card {
+  pointer-events: auto;
+  max-width: 480px;
+  margin: 20vh auto;
+  padding: 32px;
+  background: rgba(20, 20, 34, 0.9);
+  border-radius: 12px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.entry-subtitle {
+  opacity: 0.75;
+  font-size: 0.95em;
+}
+
+.entry-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+
+.join-row {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.join-row input {
+  flex: 1;
+  max-width: 160px;
+}
+
+/* --- Lobby screen: corner panels --- */
+
+.panel {
+  position: absolute;
+  pointer-events: auto;
+  background: rgba(20, 20, 34, 0.9);
+  border-radius: 12px;
+  padding: 16px;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.panel-top-left {
+  top: 16px;
+  left: 16px;
+}
+
+.panel-top-right {
+  top: 16px;
+  right: 16px;
+}
+
+#host-map-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #333;
 }
 
 #color-picker {
@@ -111,6 +156,11 @@ button:hover {
   box-shadow: 0 0 0 2px #12121e, 0 0 0 4px #fff;
 }
 
+.color-swatch.taken {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
 .player-row {
   display: flex;
   align-items: center;
@@ -127,6 +177,44 @@ button:hover {
 .focus-hint {
   margin-top: 8px;
 }
+
+/* --- Config modal --- */
+
+#config-modal:not(.hidden) {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: auto;
+}
+
+.modal-card {
+  background: #1a1a2e;
+  border-radius: 12px;
+  padding: 24px;
+  width: min(600px, 90vw);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#config-textarea {
+  font-family: 'SF Mono', Consolas, monospace;
+  font-size: 0.85em;
+  resize: vertical;
+  min-height: 320px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* --- HUD --- */
 
 #hud {
   position: absolute;

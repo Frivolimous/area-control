@@ -90,6 +90,50 @@ export interface GameConfig {
    * game/turnEngine.ts checkVictory.
    */
   maxTurns: number;
+
+  // --- Map generation tuning (game/mapGenerator.ts, game/lakes.ts) ---
+  // All hand-tuned by averaging results across many seeds at a couple of
+  // map sizes, not derived from anything principled — see the comments at
+  // each constant's original definition in mapGenerator.ts for the
+  // reasoning and the empirical numbers behind each default.
+
+  /**
+   * Generation happens on a grid mapWidth/mapHeight * this factor, with
+   * the land tile target still based on the UNPADDED mapWidth/mapHeight —
+   * the padding exists purely to give mapEdgeMargin room to work without
+   * competing with the land target for the same fixed area. Below ~1.2,
+   * high mapLandPercent values can leave barely enough usable interior
+   * after the margin for the shape to be anything but a near-maximal,
+   * edge-forced fill.
+   */
+  mapPaddingFactor: number;
+  /** Margin width as a fraction of the padded grid's smaller dimension — land is never placed within this distance of the true grid edge. */
+  mapEdgeMarginFraction: number;
+  /** Floor on margin width in tiles, regardless of mapEdgeMarginFraction — matters on small maps where the fraction alone would round to nothing. */
+  mapEdgeMarginMin: number;
+
+  /**
+   * Voronoi region count = clamp(round(sqrt(paddedTotalTiles) / divisor), min, max).
+   * Fewer/larger regions (higher divisor) look blockier and lose more
+   * area to margin clipping (each region is too coarse to shape around
+   * the margin precisely); more/smaller regions (lower divisor) start
+   * looking noisy again, undoing the point of generating at region
+   * granularity instead of per-hex.
+   */
+  mapRegionCountDivisor: number;
+  mapRegionCountMin: number;
+  mapRegionCountMax: number;
+
+  /** Lake count = clamp(round(targetLandTiles / divisor), min, max). */
+  mapLakeCountDivisor: number;
+  mapLakeCountMin: number;
+  mapLakeCountMax: number;
+  /** Per-lake minimum size (tiles) = max(floor, round(targetLandTiles / divisor)). */
+  mapLakeMinSizeDivisor: number;
+  mapLakeMinSizeFloor: number;
+  /** Per-lake maximum size (tiles) = max(floor, round(targetLandTiles / divisor)). */
+  mapLakeMaxSizeDivisor: number;
+  mapLakeMaxSizeFloor: number;
 }
 
 export interface GameState {
@@ -136,4 +180,20 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
   influenceDecayPerTurn: 5,
   controlPercentTarget: 0.5,
   maxTurns: 500,
+
+  mapPaddingFactor: 1.4,
+  mapEdgeMarginFraction: 0.08,
+  mapEdgeMarginMin: 2,
+
+  mapRegionCountDivisor: 2.75,
+  mapRegionCountMin: 10,
+  mapRegionCountMax: 200,
+
+  mapLakeCountDivisor: 2500,
+  mapLakeCountMin: 1,
+  mapLakeCountMax: 5,
+  mapLakeMinSizeDivisor: 150,
+  mapLakeMinSizeFloor: 20,
+  mapLakeMaxSizeDivisor: 40,
+  mapLakeMaxSizeFloor: 40,
 };

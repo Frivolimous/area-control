@@ -23,12 +23,7 @@ export interface TestGame {
 
 export function createTestGame(numPlayers: number, config = DEFAULT_GAME_CONFIG): TestGame {
   const seed = Math.floor(Math.random() * 0xffffffff);
-  const tiles = generateMap({
-    width: config.mapWidth,
-    height: config.mapHeight,
-    landPercent: config.mapLandPercent,
-    seed,
-  });
+  const tiles = generateMap(config, seed);
 
   const activeTiles = tiles.filter((t) => t.active);
   if (activeTiles.length < numPlayers) {

@@ -15,13 +15,6 @@ export class MapRenderer {
     stage.addChild(this.container);
   }
 
-  clear(): void {
-    for (const g of this.tileGraphics.values()) {
-      g.destroy();
-    }
-    this.tileGraphics.clear();
-  }
-
   /**
    * Renders active tiles, colored by whatever getFillColor decides —
    * decoupled from any particular game phase so this same renderer works
@@ -67,6 +60,21 @@ export class MapRenderer {
     if (!tile.active) return;
     const g = this.tileGraphics.get(hexKey(tile.coord));
     if (g) this.drawHex(g, tile, fillColor, highlighted);
+  }
+
+  /**
+   * Destroys every existing tile Graphics object, so this same renderer
+   * (and the pixi Application/container it's attached to) can be reused
+   * for a completely different tile set — e.g. the host regenerating the
+   * map. Deliberately doesn't recreate the Application: re-running
+   * initPixiApp would append a second canvas on top of the first rather
+   * than replacing it.
+   */
+  reset(): void {
+    for (const g of this.tileGraphics.values()) {
+      g.destroy();
+    }
+    this.tileGraphics.clear();
   }
 }
 

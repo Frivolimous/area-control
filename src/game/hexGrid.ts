@@ -27,6 +27,31 @@ export function hexNeighbors(coord: HexCoord): HexCoord[] {
   }));
 }
 
+/**
+ * All hex coords exactly `radius` steps from center — radius 0 returns
+ * just [center], radius N returns a ring of 6*N coords (standard hex-ring
+ * walk: start N steps out in one fixed direction, then walk N steps along
+ * each of the 6 sides in turn). Used for ring-by-ring influence expansion
+ * (game/influence.ts ringExpand) — radius 1, 2, 3... outward from a focus.
+ */
+export function hexRing(center: HexCoord, radius: number): HexCoord[] {
+  if (radius <= 0) return radius === 0 ? [center] : [];
+
+  const results: HexCoord[] = [];
+  let coord: HexCoord = {
+    q: center.q + AXIAL_DIRECTIONS[4].q * radius,
+    r: center.r + AXIAL_DIRECTIONS[4].r * radius,
+  };
+
+  for (let side = 0; side < 6; side++) {
+    for (let step = 0; step < radius; step++) {
+      results.push(coord);
+      coord = { q: coord.q + AXIAL_DIRECTIONS[side].q, r: coord.r + AXIAL_DIRECTIONS[side].r };
+    }
+  }
+  return results;
+}
+
 export function hexDistance(a: HexCoord, b: HexCoord): number {
   const aq = a.q,
     ar = a.r,
