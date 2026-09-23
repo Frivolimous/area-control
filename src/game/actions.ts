@@ -27,12 +27,9 @@ export function resolveFocusTiles(player: Player, actions: FocusChangedAction[],
 
 /**
  * Toggles a tile in/out of a player's current focus set — the interaction
- * behind clicking a tile during Active play. The start tile can never be
- * removed (brief rule 1), so toggling it is a no-op.
+ * behind clicking a tile during Active play.
  */
-export function toggleFocusTile(currentFocus: HexCoord[], startTile: HexCoord, coord: HexCoord): HexCoord[] {
-  if (hexEquals(coord, startTile)) return currentFocus;
-
+export function toggleFocusTile(currentFocus: HexCoord[], coord: HexCoord): HexCoord[] {
   const alreadyFocused = currentFocus.some((c) => hexEquals(c, coord));
   if (alreadyFocused) {
     return currentFocus.filter((c) => !hexEquals(c, coord));

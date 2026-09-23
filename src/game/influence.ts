@@ -1,5 +1,5 @@
 import { GameConfig, HexCoord, Player, PlayerId, Tile } from '../types/game';
-import { hexKey, hexLine, hexRing, hexDistance } from './hexGrid';
+import { hexKey, hexLine, hexRing, hexDistance, hexNeighbors } from './hexGrid';
 import { Rng } from './rng';
 
 export function calculateInfluenceEarned(config: GameConfig, numControlledTiles: number): number {
@@ -55,7 +55,8 @@ export function spreadInfluence(
   controlledTiles: Tile[]
 ): void {
   if (!player.startTile || focusTiles.length === 0) return; // hasn't picked a start location yet — nothing to spread from.
-
+  if (controlledTiles.length === 0) return; // has no territory — nothing to spread from.
+  
   const perFocus = Math.floor(earnedInfluence / focusTiles.length);
   let remainder = earnedInfluence - perFocus * focusTiles.length;
 
@@ -81,6 +82,13 @@ function findNearestControlledTile(controlledTiles: Tile[], target: HexCoord): H
     }
   }
   return nearest;
+}
+
+function isAdjacentControlledTile(tiles: Map<string, Tile>, player: Player, target: HexCoord): boolean {
+  return hexNeighbors(target).some((coord) => {
+    const tile = tiles.get(hexKey(coord));
+    return tile ? isControlledBy(tile, player.id) : false;
+  });
 }
 
 function spendOnFocus(
@@ -111,42 +119,7 @@ function spendOnFocus(
     // some other direction — needlessly long once expanded, and could
     // hit an unrelated gap near the original start point even when the
     // player's actual nearest territory had a clean path.
-    //
-    // Also STOPS at the first gap (an inactive tile, or one that doesn't
-    // exist on the grid at all) rather than skipping past it and
-    // continuing to spend on tiles on the far side — otherwise influence
-    // could "cross" open water or the edge of the generated grid
-    // instantly in a single turn, without ever actually reaching there
-    // via contiguous land.
-    //
-    // Whatever's left over once the walk is blocked by a gap, or
-    // finishes (reaches the focus, or the whole reachable path is
-    // already maxed), ring-expands from whichever tile the walk actually
-    // reached — that tile effectively becomes the focus for the
-    // leftover, exactly as if it had been a controlled focus there.
-    const origin = findNearestControlledTile(controlledTiles, focus) ?? startTile;
-    const path = hexLine(origin, focus);
-    let remaining = budget;
-    let lastReached: HexCoord = origin;
-
-    for (const coord of path) {
-      if (remaining <= 0) break;
-      const tile = tiles.get(hexKey(coord));
-      if (!tile || !tile.active) break; // gap — stop here, don't cross it
-      lastReached = coord;
-
-      const current = tile.influence[player.id] ?? 0;
-      const toMax = config.maxInfluencePerTile - current;
-      if (toMax <= 0) continue; // already maxed — move on to the next tile along the path
-
-      const spend = Math.min(remaining, toMax);
-      addInfluence(tile, player.id, spend, config);
-      remaining -= spend;
-    }
-
-    if (remaining > 0) {
-      ringExpand(player, lastReached, remaining, tiles, config, rng);
-    }
+    walkExpand(player, startTile, focus, budget, tiles, config, rng, controlledTiles);
   }
 }
 
@@ -198,14 +171,18 @@ function ringExpand(
   let radius = 0;
 
   while (remaining > 0 && radius <= MAX_RING_RADIUS) {
+    const controlledRing: Tile[] = [];
     const ring = hexRing(center, radius).filter((coord) => {
       const tile = tiles.get(hexKey(coord));
       if (!tile || !tile.active) return false;
+      if (radius > 0 && !isAdjacentControlledTile(tiles, player, coord)) return false;
       const current = tile.influence[player.id] ?? 0;
+      if (current >= config.maxInfluencePerTile) controlledRing.push(tile);
       return current < config.maxInfluencePerTile;
     });
 
     if (ring.length === 0) {
+      if (radius > 1 && controlledRing.length === 0) break; // no eligible tiles at all — stop here, don't waste time on wider rings
       radius++;
       continue;
     }
@@ -239,6 +216,59 @@ function ringExpand(
 
     radius++;
   }
+}
+
+function walkExpand(
+  player: Player,
+  startTile: HexCoord,
+  focus: HexCoord,
+  budget: number,
+  tiles: Map<string, Tile>,
+  config: GameConfig,
+  rng: Rng,
+  controlledTiles: Tile[]
+){
+  //
+    // Also STOPS at the first gap (an inactive tile, or one that doesn't
+    // exist on the grid at all) rather than skipping past it and
+    // continuing to spend on tiles on the far side — otherwise influence
+    // could "cross" open water or the edge of the generated grid
+    // instantly in a single turn, without ever actually reaching there
+    // via contiguous land.
+    //
+    // Whatever's left over once the walk is blocked by a gap, or
+    // finishes (reaches the focus, or the whole reachable path is
+    // already maxed), ring-expands from whichever tile the walk actually
+    // reached — that tile effectively becomes the focus for the
+    // leftover, exactly as if it had been a controlled focus there.
+    const origin = findNearestControlledTile(controlledTiles, focus) ?? startTile;
+    if (!origin) return; // has no territory — nothing to spread from.
+    
+    const path = hexLine(origin, focus);
+    let remaining = budget;
+    let lastReached: HexCoord = origin;
+
+    for (let i = 0; i < path.length; i++) {
+      const coord = path[i];
+      if (remaining <= 0) break;
+      const tile = tiles.get(hexKey(coord));
+      if (!tile || !tile.active) break; // gap — stop here, don't cross it
+      if (i > 0 && !isAdjacentControlledTile(tiles, player, coord)) break;
+      
+      lastReached = coord;
+
+      const current = tile.influence[player.id] ?? 0;
+      const toMax = config.maxInfluencePerTile - current;
+      if (toMax <= 0) continue; // already maxed — move on to the next tile along the path
+
+      const spend = Math.min(remaining, toMax);
+      addInfluence(tile, player.id, spend, config);
+      remaining -= spend;
+    }
+
+    if (remaining > 0) {
+      ringExpand(player, lastReached, remaining, tiles, config, rng);
+    }
 }
 
 function addInfluence(tile: Tile, playerId: PlayerId, amount: number, config: GameConfig): void {

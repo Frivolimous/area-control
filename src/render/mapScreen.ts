@@ -1,7 +1,7 @@
 import * as PIXI from 'pixi.js';
 import { GameConfig, GameState, HexCoord, Player, Tile } from '../types/game';
 import { generateMap } from '../game/mapGenerator';
-import { hexEquals, hexKey, hexToPixel } from '../game/hexGrid';
+import { hexDistance, hexEquals, hexKey, hexToPixel } from '../game/hexGrid';
 import { hexStringToNumber, influenceFillColor, lerpColorNumeric } from '../utils/color';
 import { MapRenderer, HEX_SIZE } from './mapRenderer';
 import { onTileClick } from './inputHandler';
@@ -158,6 +158,10 @@ function getMyFocusTiles(): HexCoord[] {
   return me ? resolveFocusTiles(me, localState.actions, localState.turn) : [];
 }
 
+function getMinFocusDistance(config: GameConfig): number {
+  return Math.max(0, Math.floor(Math.min(config.mapWidth, config.mapHeight) / 35));
+}
+
 /**
  * Toggles a tile in/out of the current player's own focus set. The start
  * tile can never be removed (brief rule 1) — toggleFocusTile is a no-op
@@ -172,13 +176,18 @@ function handleGameClick(coord: HexCoord): void {
   if (!localState || !myRoomId || !myPlayerId) return;
   const me = localState.players[myPlayerId];
   if (!me || !me.startTile) return;
+  const currentFocus = getMyFocusTiles();
+  const closestFocus = getClosestFocusTile(coord, currentFocus);
+  if (closestFocus && hexDistance(coord, closestFocus) <= getMinFocusDistance(localState.config)) {
+    // if there exists a focus tile less than or equal to the minimum focus distance, toggle that one instead of the clicked tile
+    coord = closestFocus;
+  }
 
   const tile = localTiles.find((t) => hexEquals(t.coord, coord));
   if (!tile || !tile.active) return;
 
-  const currentFocus = getMyFocusTiles();
-  const newFocus = toggleFocusTile(currentFocus, me.startTile, coord);
-  if (newFocus === currentFocus) return; // no-op toggle (clicked the start tile)
+  if (me.startTile && hexEquals(coord, me.startTile)) return; // no-op toggle (clicked the start tile)
+  const newFocus = toggleFocusTile(currentFocus, coord);
 
   optimisticFocusTiles = newFocus;
   if (mapRenderer) {
@@ -192,6 +201,19 @@ function handleGameClick(coord: HexCoord): void {
   changeFocus(myRoomId, myPlayerId, newFocus, effectiveTurn).catch((err) => {
     console.error('Failed to change focus', err);
   });
+}
+
+function getClosestFocusTile(coord: HexCoord, focusTiles: HexCoord[]): HexCoord | null {
+  let closest: HexCoord | null = null;
+  let closestDist = Infinity;
+  for (const focus of focusTiles) {
+    const dist = hexDistance(coord, focus);
+    if (dist < closestDist) {
+      closest = focus;
+      closestDist = dist;
+    }
+  }
+  return closest;
 }
 
 /**

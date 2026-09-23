@@ -75,7 +75,7 @@ export function checkVictory(state: GameState, tiles: Tile[]): Player | null {
   }
 
   for (const [playerId, count] of Object.entries(counts)) {
-    if (count / totalActive > state.config.controlPercentTarget) {
+    if (count >= Math.floor(state.config.controlPercentTarget * totalActive)) {
       return state.players[playerId] ?? null;
     }
   }
