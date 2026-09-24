@@ -89,6 +89,18 @@ button:disabled {
   justify-content: center;
 }
 
+.entry-instructions {
+  text-align: left;
+  font-size: 0.9em;
+  opacity: 0.85;
+}
+
+.entry-footer {
+  position: fixed;
+  bottom: 10px;
+  left: 10px;
+}
+
 .join-row {
   display: flex;
   gap: 8px;

@@ -16,6 +16,17 @@ export function renderEntryScreen(root: HTMLElement): void {
         <input id="room-code-input" placeholder="Room code" maxlength="6" />
         <button id="join-confirm-btn">Go</button>
       </div>
+      <div class="entry-instructions">
+        <h2>How to Play</h2>
+        <p>1. Select a single starting tile on the map to begin.</p>
+        <p>2. Control tiles on the map to earn influence. The more tiles you control, the more influence you earn.</p>
+        <p>3. Click tiles to set your focus. Your influence will be evenly distributed between each focussed tile.</p>
+        <p>4. The game ends when a player controls most of the map, or when the maximum number of turns is reached.</p>
+        <br><p>Good luck!</p>
+      </div>
+    </div>
+    <div class="entry-footer">
+      <p>Created by Jeremy Moshe for Bring it On! Happy Hour Games, 24/09/2026</p>
     </div>
   `;
 }
