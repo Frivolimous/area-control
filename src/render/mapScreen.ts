@@ -134,7 +134,7 @@ export function regenerateMapScreen(config: GameConfig, seed: number): void {
   if (!mapRenderer) return;
   currentTiles = generateMap(config, seed);
   mapRenderer.reset();
-  fitAndCenter(getPixiApp(), mapRenderer.container, currentTiles, true);
+  fitAndCenter(getPixiApp(), mapRenderer.container, currentTiles);
 }
 
 function handleSetupClick(roomId: string, playerId: string, coord: HexCoord): void {
@@ -434,14 +434,14 @@ function renderGameTiles(): void {
 }
 
 /** Scales and centers the map container to fit the current viewport. No pan/zoom yet — just an initial fit. */
-function fitAndCenter(app: PIXI.Application, container: PIXI.Container, tiles: Tile[], onlyFitActive = false): void {
+function fitAndCenter(app: PIXI.Application, container: PIXI.Container, tiles: Tile[]): void {
   let minX = Infinity,
     maxX = -Infinity,
     minY = Infinity,
     maxY = -Infinity;
 
   for (const tile of tiles) {
-    if (onlyFitActive && !tile.active) continue;
+    if (!tile.active) continue;
     const { x, y } = hexToPixel(tile.coord, HEX_SIZE);
     if (x < minX) minX = x;
     if (x > maxX) maxX = x;
@@ -452,7 +452,7 @@ function fitAndCenter(app: PIXI.Application, container: PIXI.Container, tiles: T
   const pad = HEX_SIZE * 2;
   const mapW = maxX - minX + pad * 2;
   const mapH = maxY - minY + pad * 2;
-  const frameWidth = Math.max(app.screen.width - 260 * 2, 260); // 260px sidebars on each side from css, but never less than 260px for a narrow window
+  const frameWidth = Math.max(app.screen.width - 260 * 2, 520); // 260px sidebars on each side from css, but never less than 260px for a narrow window
   const scale = Math.min(frameWidth / mapW, app.screen.height / mapH);
 
   container.scale.set(scale);
@@ -470,8 +470,12 @@ window.addEventListener('resize', () => {
 
     // Set a delay (e.g., 200ms) before executing the final logic
     resizeTimeout = setTimeout(() => {
-      const app = getPixiApp();
-      if (!app || !mapRenderer) return;
-      fitAndCenter(app, mapRenderer.container, currentTiles);
+      try {
+        const app = getPixiApp();
+        if (!app || !mapRenderer) return;
+        fitAndCenter(app, mapRenderer.container, currentTiles);
+      } catch (error) {
+        return;
+      }
     }, 200);
 });
