@@ -1,6 +1,5 @@
 import { GameState, Tile } from '../types/game';
-import { calculateInfluenceEarned, getControlledTileCount } from '../game/influence';
-import { tileMapFromArray } from '../game/mapGenerator';
+import { calculateInfluenceEarned, ControlledTilePlayersCount } from '../game/influence';
 import { resolveFocusTiles } from '../game/actions';
 
 export function renderHud(root: HTMLElement, state: GameState, tiles: Tile[], myPlayerId: string): void {
@@ -9,13 +8,13 @@ export function renderHud(root: HTMLElement, state: GameState, tiles: Tile[], my
 
   const leaderboard = root.querySelector('#leaderboard');
   if (leaderboard) {
-    const tileMap = tileMapFromArray(tiles);
+    const counts = ControlledTilePlayersCount(tiles, state.config);
     const rows = Object.values(state.players)
       .filter((p) => !p.isSpectator)
       .map((p) => ({
         player: p,
-        count: getControlledTileCount(tileMap, p.id),
-        influence: calculateInfluenceEarned(state.config, getControlledTileCount(tileMap, p.id)),
+        count: counts[p.id] || 0,
+        influence: calculateInfluenceEarned(state.config, counts[p.id] || 0),
       }))
       .sort((a, b) => b.count - a.count);
 

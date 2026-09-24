@@ -91,7 +91,7 @@ export function runTurns(game: TestGame, count: number): TestGame {
 export function logLeaderboard(game: TestGame): void {
   const tileMap = tileMapFromArray(game.tiles);
   const rows = Object.values(game.state.players)
-    .map((p) => ({ name: p.name, tiles: getControlledTileCount(tileMap, p.id) }))
+    .map((p) => ({ name: p.name, tiles: getControlledTileCount(tileMap, p.id, game.state.config) }))
     .sort((a, b) => b.tiles - a.tiles);
   console.table(rows);
 }

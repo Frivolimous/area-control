@@ -2,9 +2,10 @@ import { GameState, Player, Tile } from '../types/game';
 import { tileMapFromArray } from './mapGenerator';
 import {
   calculateInfluenceEarned,
-  getControlledTiles,
   spreadInfluence,
   applyDecay,
+  ControlledTilePlayersCount,
+  ControlledTilePlayersMap,
 } from './influence';
 import { createRng, deriveSeed } from './rng';
 import { resolveFocusTiles } from './actions';
@@ -40,8 +41,10 @@ export function processTurn(state: GameState, tiles: Tile[]): TurnResult {
     .filter((p) => !p.isSpectator)
     .sort((a, b) => a.id.localeCompare(b.id));
 
+  const playerTiles = ControlledTilePlayersMap(tiles, state.config);
+
   for (const player of players) {
-    const controlledTiles = getControlledTiles(tileMap, player.id);
+    const controlledTiles = playerTiles[player.id] || [];
     const earned = calculateInfluenceEarned(state.config, controlledTiles.length);
     const focusTiles = resolveFocusTiles(player, state.actions, state.turn);
     // Each player gets an independent-looking but fully deterministic RNG
@@ -65,14 +68,7 @@ export function checkVictory(state: GameState, tiles: Tile[]): Player | null {
   const activeTiles = tiles.filter((t) => t.active);
   const totalActive = activeTiles.length;
   if (totalActive === 0) return null;
-
-  const counts: Record<string, number> = {};
-  for (const tile of activeTiles) {
-    const influencers = Object.keys(tile.influence).filter((id) => (tile.influence[id] ?? 0) > 0);
-    if (influencers.length === 1) {
-      counts[influencers[0]] = (counts[influencers[0]] ?? 0) + 1;
-    }
-  }
+  const counts = ControlledTilePlayersCount(activeTiles, state.config);
 
   for (const [playerId, count] of Object.entries(counts)) {
     if (count >= Math.floor(state.config.controlPercentTarget * totalActive)) {

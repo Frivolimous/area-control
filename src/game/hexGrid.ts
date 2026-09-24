@@ -104,17 +104,17 @@ function hexRound(cube: { q: number; r: number; s: number }): HexCoord {
   return { q, r };
 }
 
-/** Axial -> pixel conversion for flat-top hexes, given a hex "size" (radius). */
+/** flat top hex to pixel conversion. */
 export function hexToPixel(coord: HexCoord, size: number): { x: number; y: number } {
-  const x = size * (3 / 2) * coord.q;
-  const y = size * (Math.sqrt(3) * (coord.r + coord.q / 2));
+  const x = size * coord.q + (size / 2) * coord.r;
+  const y = (size * Math.sqrt(3) / 2) * coord.r;
   return { x, y };
 }
 
 /** Inverse of hexToPixel — pixel position -> nearest hex coordinate. */
 export function pixelToHex(x: number, y: number, size: number): HexCoord {
-  const q = (2 / 3) * (x / size);
-  const r = y / (Math.sqrt(3) * size) - q / 2;
+  const r = y / (size * Math.sqrt(3) / 2);
+  const q = (x - (size / 2) * r) / size;
   return hexRound({ q, r, s: -q - r });
 }
 

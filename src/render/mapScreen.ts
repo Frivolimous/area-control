@@ -451,7 +451,7 @@ function fitAndCenter(app: PIXI.Application, container: PIXI.Container, tiles: T
   const pad = HEX_SIZE * 2;
   const mapW = maxX - minX + pad * 2;
   const mapH = maxY - minY + pad * 2;
-  const scale = Math.min(app.screen.width / mapW, app.screen.height / mapH, 1);
+  const scale = (app.screen.width / mapW, app.screen.height / mapH);
 
   container.scale.set(scale);
   container.position.set(

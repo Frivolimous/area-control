@@ -4,25 +4,51 @@ import { Rng } from './rng';
 
 export function calculateInfluenceEarned(config: GameConfig, numControlledTiles: number): number {
   // Brief's formula, flagged there as still needing work.
-  return config.influenceEarnedBase + config.influenceEarnedPerTile * numControlledTiles;
+  return Math.floor(config.influenceEarnedBase + config.influenceEarnedPerTile * Math.pow(numControlledTiles, config.influenceEarnedExponent));
 }
 
-export function isControlledBy(tile: Tile, playerId: PlayerId): boolean {
-  const influencers = Object.keys(tile.influence).filter((id) => (tile.influence[id] ?? 0) > 0);
-  return influencers.length === 1 && influencers[0] === playerId;
+export function isControlledBy(tile: Tile, playerId: PlayerId, config: GameConfig): boolean {
+  return tile.influence[playerId]! >= config.maxInfluencePerTile;
 }
 
 /** All tiles a player currently exclusively controls. */
-export function getControlledTiles(tiles: Map<string, Tile>, playerId: PlayerId): Tile[] {
+export function getControlledTiles(tiles: Map<string, Tile>, playerId: PlayerId, config: GameConfig): Tile[] {
   const result: Tile[] = [];
   for (const tile of tiles.values()) {
-    if (isControlledBy(tile, playerId)) result.push(tile);
+    if (isControlledBy(tile, playerId, config)) result.push(tile);
   }
   return result;
 }
 
-export function getControlledTileCount(tiles: Map<string, Tile>, playerId: PlayerId): number {
-  return getControlledTiles(tiles, playerId).length;
+export function getControlledTileCount(tiles: Map<string, Tile>, playerId: PlayerId, config: GameConfig): number {
+  return getControlledTiles(tiles, playerId, config).length;
+}
+
+export function ControlledTilePlayersCount(tiles: Tile[], config: GameConfig): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const tile of tiles) {
+    const influencers = Object.keys(tile.influence).filter((id) => (tile.influence[id] ?? 0) > 0);
+    if (tile.influence[influencers[0]]! >= config.maxInfluencePerTile) { // testing: only need maxed influence, don't care about contesting
+      counts[influencers[0]] = (counts[influencers[0]] ?? 0) + 1;
+    }
+  }
+
+  return counts;
+}
+
+export function ControlledTilePlayersMap(tiles: Tile[], config: GameConfig): Record<string, Tile[]> {
+  const map: Record<string, Tile[]> = {};
+  for (const tile of tiles) {
+    const influencers = Object.keys(tile.influence).filter((id) => (tile.influence[id] ?? 0) > 0);
+    if (tile.influence[influencers[0]]! >= config.maxInfluencePerTile) { // testing: only need maxed influence, don't care about contesting
+      if (!map[influencers[0]]) {
+        map[influencers[0]] = [];
+      }
+      map[influencers[0]].push(tile);
+    }
+  }
+
+  return map;
 }
 
 /**
@@ -84,10 +110,10 @@ function findNearestControlledTile(controlledTiles: Tile[], target: HexCoord): H
   return nearest;
 }
 
-function isAdjacentControlledTile(tiles: Map<string, Tile>, player: Player, target: HexCoord): boolean {
+function isAdjacentControlledTile(tiles: Map<string, Tile>, player: Player, target: HexCoord, config: GameConfig): boolean {
   return hexNeighbors(target).some((coord) => {
     const tile = tiles.get(hexKey(coord));
-    return tile ? isControlledBy(tile, player.id) : false;
+    return tile ? isControlledBy(tile, player.id, config) : false;
   });
 }
 
@@ -104,7 +130,7 @@ function spendOnFocus(
   const focusTile = tiles.get(hexKey(focus));
   if (!focusTile || budget <= 0) return;
 
-  if (isControlledBy(focusTile, player.id)) {
+  if (isControlledBy(focusTile, player.id, config)) {
     // Rules 4-5: ring-expand outward from the focus itself. Radius 0 (the
     // focus tile) is naturally prioritized first as the smallest ring, so
     // this covers "pump the focus to max" and "spread the leftover
@@ -175,7 +201,7 @@ function ringExpand(
     const ring = hexRing(center, radius).filter((coord) => {
       const tile = tiles.get(hexKey(coord));
       if (!tile || !tile.active) return false;
-      if (radius > 0 && !isAdjacentControlledTile(tiles, player, coord)) return false;
+      if (radius > 0 && !isAdjacentControlledTile(tiles, player, coord, config)) return false;
       const current = tile.influence[player.id] ?? 0;
       if (current >= config.maxInfluencePerTile) controlledRing.push(tile);
       return current < config.maxInfluencePerTile;
@@ -253,7 +279,7 @@ function walkExpand(
       if (remaining <= 0) break;
       const tile = tiles.get(hexKey(coord));
       if (!tile || !tile.active) break; // gap — stop here, don't cross it
-      if (i > 0 && !isAdjacentControlledTile(tiles, player, coord)) break;
+      if (i > 0 && !isAdjacentControlledTile(tiles, player, coord, config)) break; // no control in the neighborhood — stop here, don't cross it
       
       lastReached = coord;
 

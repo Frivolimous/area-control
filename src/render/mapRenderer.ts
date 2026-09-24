@@ -4,6 +4,8 @@ import { hexToPixel, hexKey } from '../game/hexGrid';
 
 // Pixels; tune once real map scale / zoom behavior is settled.
 export const HEX_SIZE = 12;
+export const HEX_DRAW_SIZE = HEX_SIZE / 2 / Math.cos(Math.PI / 6);
+
 
 export class MapRenderer {
   /** Exposed so callers (mapScreen.ts) can position/scale/hit-test against it. */
@@ -43,7 +45,7 @@ export class MapRenderer {
     g.clear();
     if (highlighted) g.lineStyle(2, 0xffffff, 1);
     g.beginFill(fillColor);
-    g.drawPolygon(hexCorners(x, y, HEX_SIZE));
+    g.drawPolygon(hexCorners(x, y, HEX_DRAW_SIZE));
     g.endFill();
     if (highlighted) g.lineStyle(0);
   }
@@ -81,7 +83,7 @@ export class MapRenderer {
 function hexCorners(cx: number, cy: number, size: number): number[] {
   const points: number[] = [];
   for (let i = 0; i < 6; i++) {
-    const angle = (Math.PI / 180) * (60 * i);
+    const angle = (Math.PI / 180) * (60 * i - 30);
     points.push(cx + size * Math.cos(angle), cy + size * Math.sin(angle));
   }
   return points;

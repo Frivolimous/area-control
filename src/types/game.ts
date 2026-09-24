@@ -79,6 +79,7 @@ export interface GameConfig {
   maxInfluencePerTile: number;
   influenceEarnedBase: number;
   influenceEarnedPerTile: number;
+  influenceEarnedExponent: number;
   influenceDecayPerTurn: number;
   controlPercentTarget: number;
   /**
@@ -177,6 +178,7 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
   maxInfluencePerTile: 100,
   influenceEarnedBase: 10,
   influenceEarnedPerTile: 1,
+  influenceEarnedExponent: 1.0,
   influenceDecayPerTurn: 5,
   controlPercentTarget: 0.5,
   maxTurns: 500,
