@@ -43,7 +43,7 @@ export class MapRenderer {
   private drawHex(g: PIXI.Graphics, tile: Tile, fillColor: number, highlighted: boolean): void {
     const { x, y } = hexToPixel(tile.coord, HEX_SIZE);
     g.clear();
-    if (highlighted) g.lineStyle(2, 0xffffff, 1);
+    if (highlighted) g.lineStyle(2, 0xffffff, 1, 0);
     g.beginFill(fillColor);
     g.drawPolygon(hexCorners(x, y, HEX_DRAW_SIZE));
     g.endFill();
